@@ -50,20 +50,38 @@ impl Rga {
     // Remote operations — called when an Op arrives over WebSocket
     // -------------------------------------------------------------------------
 
-    /// Algorithm 8 from Roh et al. 2011.
-    /// `left`  — s_k of the left cobject (None = insert at head).
-    /// `obj`   — character to insert.
-    /// `s_k`   — this node's permanent identity (stored in the new Node).
+    /// Algorithm 8 (Roh et al. 2011).
+    /// Insert a new node after `left` (None = insert at head).
+    /// Scan rightward, skipping nodes whose s_k has HIGHER priority than s_k,
+    /// until we find one with lower priority — insert before it.
     pub fn remote_insert(&mut self, left: Option<S4Vector>, obj: char, s_k: S4Vector) {
-        todo!(
-            "
-            (i)  Find left cobject in hash table via SVI.
-            (ii) Create new Node, add to hash table.
-            (iii) Scan linked list from left cobject; skip Nodes whose s_k succeeds ins.s_k.
-            (iv) Link new Node in front of the first non-succeeding Node.
-            See Algorithm 8 in the paper.
-            "
-        )
+        let new_idx = self.nodes.len();
+        self.nodes.push(Node::new(obj, s_k.clone()));
+        self.hash.insert(s_k.clone(), new_idx);
+
+        let left_idx = left.and_then(|s4v| self.hash.get(&s4v).copied());
+
+        let mut prev = left_idx;
+        let mut cur = match left_idx {
+            None      => self.head,
+            Some(idx) => self.nodes[idx].link,
+        };
+
+        // Skip nodes with strictly higher priority (concurrent insert at same position).
+        // Stop at the first node with lower priority — insert before it.
+        while let Some(c) = cur {
+            if self.nodes[c].s_k.precedes(&s_k) {
+                break; // c.s_k lower priority → insert before c
+            }
+            prev = Some(c);
+            cur  = self.nodes[c].link;
+        }
+
+        self.nodes[new_idx].link = cur;
+        match prev {
+            None    => self.head = Some(new_idx),
+            Some(p) => self.nodes[p].link = Some(new_idx),
+        }
     }
 
     /// Algorithm 9 from Roh et al. 2011.
@@ -106,7 +124,15 @@ impl Rga {
 
     /// Walk the linked list and collect all non-tombstone characters in order.
     pub fn to_string(&self) -> String {
-        todo!("walk self.head via node.link, push node.obj.unwrap() for non-tombstones")
+        let mut result = String::new();
+        let mut cur = self.head;
+        while let Some(idx) = cur {
+            if !self.nodes[idx].is_tombstone() {
+                result.push(self.nodes[idx].obj);
+            }
+            cur = self.nodes[idx].link;
+        }
+        result
     }
 
     // -------------------------------------------------------------------------
@@ -120,11 +146,50 @@ impl Rga {
         S4Vector::new(self.session, self.site_id, self.counter, self.counter)
     }
 
-    /// Algorithm 4 (findlist): find the nth visible (non-tombstone) node.
-    /// Returns the node's index in `self.nodes`, or None if out of bounds.
-    /// pos = 0 returns None (represents the virtual head / "insert before everything").
+    /// Algorithm 4 (findlist): return the index of the pos-th visible node (1-indexed).
+    /// pos=0 → None (virtual head, used as left=None for insert-at-head).
     fn findlist(&self, pos: usize) -> Option<usize> {
-        todo!("walk self.head via node.link, skip tombstones, count to pos")
+        if pos == 0 {
+            return None;
+        }
+        let mut count = 0;
+        let mut cur = self.head;
+        while let Some(idx) = cur {
+            if !self.nodes[idx].is_tombstone() {
+                count += 1;
+                if count == pos {
+                    return Some(idx);
+                }
+            }
+            cur = self.nodes[idx].link;
+        }
+        None
+    }
+
+    /// Returns Insert + Delete ops to replay the full current document state
+    /// into a fresh RGA. Tombstoned nodes are included (future ops reference them
+    /// by s_k), and each tombstone is followed by its Delete op.
+    pub fn hydration_ops(&self) -> Vec<Op> {
+        let mut ops = Vec::new();
+        let mut prev: Option<S4Vector> = None;
+        let mut cur = self.head;
+        while let Some(idx) = cur {
+            let node = &self.nodes[idx];
+            ops.push(Op::Insert {
+                left: prev.clone(),
+                obj:  node.obj,
+                s_k:  node.s_k.clone(),
+            });
+            if node.tombstone {
+                ops.push(Op::Delete {
+                    target: node.s_k.clone(),
+                    s_k:    node.s_p.clone(),
+                });
+            }
+            prev = Some(node.s_k.clone());
+            cur  = node.link;
+        }
+        ops
     }
 }
 
@@ -136,31 +201,83 @@ impl Rga {
 mod tests {
     use super::*;
 
+    fn s4v(ssn: u64, sid: u64, sum: u64) -> S4Vector {
+        S4Vector::new(ssn, sid, sum, sum)
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 2 tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_empty_rga_is_empty_string() {
+        let rga = Rga::new(1, 0);
+        assert_eq!(rga.to_string(), "");
+    }
+
+    #[test]
+    fn test_single_remote_insert_at_head() {
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s4v(0, 1, 1));
+        assert_eq!(rga.to_string(), "a");
+    }
+
+    #[test]
+    fn test_sequential_remote_inserts() {
+        let mut rga = Rga::new(1, 0);
+        let s_a = s4v(0, 1, 1);
+        let s_b = s4v(0, 1, 2);
+        rga.remote_insert(None, 'a', s_a.clone());
+        rga.remote_insert(Some(s_a), 'b', s_b);
+        assert_eq!(rga.to_string(), "ab");
+    }
+
+    /// dOPT puzzle — concurrent inserts at the same position converge.
+    /// Site 1 (sid=1) inserts 'a', site 2 (sid=2) inserts 'b', both at head.
+    /// Higher sid wins → 'b' (sid=2) appears before 'a' (sid=1).
+    #[test]
+    fn test_concurrent_insert_same_position() {
+        let s_a = s4v(0, 1, 1); // lower priority
+        let s_b = s4v(0, 2, 1); // higher priority (sid 2 > 1)
+
+        // Order 1: insert 'a' first, then 'b'
+        let mut rga1 = Rga::new(1, 0);
+        rga1.remote_insert(None, 'a', s_a.clone());
+        rga1.remote_insert(None, 'b', s_b.clone());
+
+        // Order 2: insert 'b' first, then 'a'
+        let mut rga2 = Rga::new(2, 0);
+        rga2.remote_insert(None, 'b', s_b.clone());
+        rga2.remote_insert(None, 'a', s_a.clone());
+
+        assert_eq!(rga1.to_string(), rga2.to_string());
+        assert_eq!(rga1.to_string(), "ba"); // b (sid=2) wins → appears first
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3–5 tests — filled in later tasks
+    // -----------------------------------------------------------------------
+
     #[test]
     fn test_single_insert() {
         todo!()
     }
 
-    /// dOPT puzzle — Example 1 from the paper.
-    /// Three concurrent inserts at the same position must converge.
     #[test]
-    fn test_concurrent_insert_same_position() {
+    fn test_concurrent_insert_same_position_local() {
         todo!()
     }
 
-    /// Example 2 from the paper.
     #[test]
     fn test_delete_then_concurrent_insert() {
         todo!()
     }
 
-    /// Apply ops in two different orders, assert same final state.
     #[test]
     fn test_convergence_two_orderings() {
         todo!()
     }
 
-    /// A concurrent Update and Delete on the same node — Delete must win.
     #[test]
     fn test_update_loses_to_delete() {
         todo!()
