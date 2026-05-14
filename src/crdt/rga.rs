@@ -40,9 +40,13 @@ impl Rga {
         Some(Op::Insert { left: left_s4v, obj, s_k })
     }
 
-    /// Delete the `pos`-th visible character (1-indexed).
+    /// Delete the visible character at 0-indexed position pos (pos=0 = first char).
     pub fn local_delete(&mut self, pos: usize) -> Option<Op> {
-        todo!("findlist(pos) to get target node, build Op::Delete with next_s4vector()")
+        let target_idx = self.findlist(pos + 1)?; // findlist is 1-indexed
+        let target = self.nodes[target_idx].s_k.clone();
+        let s_k = self.next_s4vector();
+        self.remote_delete(target.clone(), s_k.clone());
+        Some(Op::Delete { target, s_k })
     }
 
     /// Replace the `pos`-th visible character with `obj`.
@@ -88,17 +92,13 @@ impl Rga {
         }
     }
 
-    /// Algorithm 9 from Roh et al. 2011.
-    /// `target` — s_k of the node to delete.
-    /// `s_o`    — this Delete op's own s4vector (stored as the node's new s_p).
+    /// Algorithm 9 (Roh et al. 2011).
+    /// Tombstone the node identified by `target`; record `s_o` as new s_p.
     pub fn remote_delete(&mut self, target: S4Vector, s_o: S4Vector) {
-        todo!(
-            "
-            Find target in hash table.
-            Set node.obj = None (tombstone) and node.s_p = s_o.
-            See Algorithm 9 in the paper.
-            "
-        )
+        if let Some(&idx) = self.hash.get(&target) {
+            self.nodes[idx].tombstone = true;
+            self.nodes[idx].s_p = s_o;
+        }
     }
 
     /// Algorithm 10 from Roh et al. 2011.
@@ -292,14 +292,51 @@ mod tests {
         assert_eq!(rga1.to_string(), "ba"); // sid=2 higher priority → first
     }
 
+    /// Example 2 from the paper: delete a node, then a concurrent insert lands
+    /// after the same (now-tombstoned) node. The insert must still be placed correctly.
     #[test]
     fn test_delete_then_concurrent_insert() {
-        todo!()
+        let mut rga1 = Rga::new(1, 0);
+        let mut rga2 = Rga::new(2, 0);
+
+        let op_a = rga1.local_insert(0, 'a').unwrap();
+        let op_b = rga1.local_insert(1, 'b').unwrap();
+        rga2.apply(op_a);
+        rga2.apply(op_b);
+        assert_eq!(rga1.to_string(), "ab");
+        assert_eq!(rga2.to_string(), "ab");
+
+        let del_op = rga1.local_delete(0).unwrap();
+        let ins_op = rga2.local_insert(1, 'x').unwrap(); // insert after 'a' (pos 1)
+
+        rga1.apply(ins_op);
+        rga2.apply(del_op);
+
+        assert_eq!(rga1.to_string(), rga2.to_string());
+        // 'b' has s_k.sum=2; 'x' has s_k.sum=1 → b has higher priority → b before x
+        assert_eq!(rga1.to_string(), "bx");
     }
 
     #[test]
     fn test_convergence_two_orderings() {
-        todo!()
+        let mut rga1 = Rga::new(1, 0);
+        let mut rga2 = Rga::new(2, 0);
+
+        let op1 = rga1.local_insert(0, 'a').unwrap();
+        let op2 = rga2.local_insert(0, 'b').unwrap();
+
+        rga1.apply(op2.clone());
+        rga2.apply(op1.clone());
+
+        assert_eq!(rga1.to_string(), rga2.to_string());
+
+        let del1 = rga1.local_delete(1).unwrap(); // "ba" → delete pos 1 = 'a'
+        let del2 = rga2.local_delete(0).unwrap(); // "ba" → delete pos 0 = 'b'
+        rga1.apply(del2);
+        rga2.apply(del1);
+
+        assert_eq!(rga1.to_string(), rga2.to_string());
+        assert_eq!(rga1.to_string(), "");
     }
 
     #[test]
