@@ -1,1 +1,16 @@
+# Rust build output
 /target
+
+# Rust backup files
+*.rs.bk
+
+# Debug info (Windows)
+*.pdb
+
+# Editor / AI config (local only)
+CLAUDE.md
+.idea/
+.vscode/
+
+# Cargo.lock — keep for binary crates, ignored here per project preference
+Cargo.lock
