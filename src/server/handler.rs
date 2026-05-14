@@ -8,7 +8,7 @@ use axum::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         State,
     },
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     routing::get,
     Router,
 };
@@ -69,8 +69,8 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn serve_index() -> &'static str {
-    include_str!("../../static/index.html")
+async fn serve_index() -> Html<&'static str> {
+    Html(include_str!("../../static/index.html"))
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
