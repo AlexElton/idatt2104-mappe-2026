@@ -32,8 +32,12 @@ impl Rga {
     // -------------------------------------------------------------------------
 
     /// Insert `obj` after the `pos`-th visible character (0 = insert at head).
+    /// Generates a S4Vector op with this site's id, applies it locally, returns it for broadcast.
     pub fn local_insert(&mut self, pos: usize, obj: char) -> Option<Op> {
-        todo!("findlist(pos) to get left cobject, build Op::Insert with next_s4vector()")
+        let left_s4v = self.findlist(pos).map(|idx| self.nodes[idx].s_k.clone());
+        let s_k = self.next_s4vector();
+        self.remote_insert(left_s4v.clone(), obj, s_k.clone());
+        Some(Op::Insert { left: left_s4v, obj, s_k })
     }
 
     /// Delete the `pos`-th visible character (1-indexed).
@@ -260,12 +264,32 @@ mod tests {
 
     #[test]
     fn test_single_insert() {
-        todo!()
+        let mut rga = Rga::new(1, 0);
+        let op = rga.local_insert(0, 'a').unwrap();
+        assert_eq!(rga.to_string(), "a");
+        match op {
+            Op::Insert { left, obj, s_k } => {
+                assert_eq!(left, None);
+                assert_eq!(obj, 'a');
+                assert_eq!(s_k.sid, 1);
+            }
+            _ => panic!("expected Insert op"),
+        }
     }
 
     #[test]
     fn test_concurrent_insert_same_position_local() {
-        todo!()
+        let mut rga1 = Rga::new(1, 0);
+        let mut rga2 = Rga::new(2, 0);
+
+        let op1 = rga1.local_insert(0, 'a').unwrap(); // s_k.sid = 1
+        let op2 = rga2.local_insert(0, 'b').unwrap(); // s_k.sid = 2
+
+        rga1.apply(op2.clone());
+        rga2.apply(op1.clone());
+
+        assert_eq!(rga1.to_string(), rga2.to_string());
+        assert_eq!(rga1.to_string(), "ba"); // sid=2 higher priority → first
     }
 
     #[test]
