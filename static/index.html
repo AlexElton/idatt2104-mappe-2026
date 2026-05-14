@@ -2,10 +2,164 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>CRDT Editor — placeholder</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RGA Collaborative Editor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; display: flex; flex-direction: column; align-items: center; padding: 2rem; min-height: 100vh; }
+    h2 { margin-bottom: 1rem; font-size: 1.1rem; letter-spacing: 0.05em; color: #9cdcfe; }
+    #editor { width: 700px; height: 300px; background: #252526; color: #d4d4d4; border: 1px solid #3c3c3c; padding: 0.75rem; font-family: monospace; font-size: 0.95rem; resize: vertical; outline: none; }
+    #editor:focus { border-color: #007acc; }
+    #status { width: 700px; margin-top: 0.5rem; font-size: 0.8rem; color: #858585; display: flex; justify-content: space-between; }
+    #controls { width: 700px; margin-top: 1rem; display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; }
+    #interval-label { white-space: nowrap; }
+    #interval { flex: 1; accent-color: #007acc; }
+  </style>
 </head>
 <body>
-  <h2>Collaborative RGA Editor</h2>
-  <p>Frontend placeholder — will be replaced on Day 9.</p>
+  <h2>RGA Collaborative Editor</h2>
+  <textarea id="editor" placeholder="Start typing..."></textarea>
+  <div id="status">
+    <span id="conn-status">🔴 Connecting...</span>
+    <span id="sync-status">-</span>
+  </div>
+  <div id="controls">
+    <label id="interval-label">Sync interval: <strong id="interval-val">1000</strong>ms</label>
+    <input type="range" id="interval" min="100" max="5000" step="100" value="1000" />
+  </div>
+
+  <script>
+    const editor      = document.getElementById('editor');
+    const connStatus  = document.getElementById('conn-status');
+    const syncStatus  = document.getElementById('sync-status');
+    const intervalEl  = document.getElementById('interval');
+    const intervalVal = document.getElementById('interval-val');
+
+    let ws;
+    let siteId       = null;
+    let prevText     = '';
+    let pendingOps   = [];
+    let intervalMs   = 1000;
+    let syncTimer    = null;
+    let countdown    = 0;
+
+    // -----------------------------------------------------------------------
+    // Text diff — generates minimal insert/delete op list (prefix/suffix trim).
+    // Deletes are emitted in reverse order (high → low) so positions stay stable.
+    // Inserts are in forward order matching positions in the new string.
+    // -----------------------------------------------------------------------
+    function computeOps(oldText, newText) {
+      if (oldText === newText) return [];
+      const ops = [];
+
+      // Common prefix
+      let pre = 0;
+      while (pre < oldText.length && pre < newText.length && oldText[pre] === newText[pre]) pre++;
+
+      // Common suffix
+      let oldEnd = oldText.length, newEnd = newText.length;
+      while (oldEnd > pre && newEnd > pre && oldText[oldEnd - 1] === newText[newEnd - 1]) {
+        oldEnd--; newEnd--;
+      }
+
+      // Deletes (reverse order so indices stay valid)
+      for (let i = oldEnd - 1; i >= pre; i--) ops.push({ op: 'delete', pos: i });
+
+      // Inserts (forward order; positions reference the new string)
+      for (let i = pre; i < newEnd; i++) ops.push({ op: 'insert', pos: i, char: newText[i] });
+
+      return ops;
+    }
+
+    // -----------------------------------------------------------------------
+    // Sync — send pending ops to server
+    // -----------------------------------------------------------------------
+    function doSync() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const currentText = editor.value;
+      const newOps = computeOps(prevText, currentText);
+      pendingOps.push(...newOps);
+      prevText = currentText;
+
+      if (pendingOps.length > 0) {
+        ws.send(JSON.stringify({ type: 'ops', ops: pendingOps }));
+        pendingOps = [];
+      }
+      countdown = intervalMs;
+    }
+
+    function startSyncTimer() {
+      if (syncTimer) clearInterval(syncTimer);
+      syncTimer = setInterval(doSync, intervalMs);
+      countdown = intervalMs;
+    }
+
+    // Countdown display — updates every 100ms
+    setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      countdown = Math.max(0, countdown - 100);
+      syncStatus.textContent = `Next sync: ${(countdown / 1000).toFixed(1)}s | Site #${siteId ?? '?'}`;
+    }, 100);
+
+    // -----------------------------------------------------------------------
+    // WebSocket
+    // -----------------------------------------------------------------------
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+      ws.onopen = () => {
+        connStatus.textContent = '🟢 Connected';
+        startSyncTimer();
+      };
+
+      ws.onclose = () => {
+        connStatus.textContent = '🔴 Disconnected';
+        if (syncTimer) clearInterval(syncTimer);
+        setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => {
+        connStatus.textContent = '🔴 Error';
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === 'init') {
+          siteId = msg.site_id;
+          applyState(msg.text);
+          connStatus.textContent = `🟢 Connected · Site #${siteId}`;
+          return;
+        }
+
+        if (msg.type === 'state') {
+          applyState(msg.text);
+          connStatus.textContent = `🟢 Connected · Site #${siteId} · ${msg.clients} client${msg.clients !== 1 ? 's' : ''}`;
+        }
+      };
+    }
+
+    function applyState(newText) {
+      if (editor.value === newText) return;
+      const sel = editor.selectionStart;
+      editor.value = newText;
+      // Clamp cursor to new length; preserve position when possible
+      editor.setSelectionRange(Math.min(sel, newText.length), Math.min(sel, newText.length));
+      prevText = newText;
+      pendingOps = []; // server is now canonical
+    }
+
+    // -----------------------------------------------------------------------
+    // Slider
+    // -----------------------------------------------------------------------
+    intervalEl.addEventListener('input', () => {
+      intervalMs = parseInt(intervalEl.value, 10);
+      intervalVal.textContent = intervalMs;
+      startSyncTimer();
+    });
+
+    connect();
+  </script>
 </body>
 </html>
