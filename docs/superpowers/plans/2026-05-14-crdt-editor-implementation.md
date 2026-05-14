@@ -313,11 +313,42 @@ cargo test test_empty_rga_is_empty_string test_single_remote_insert_at_head test
 
 Expected: `test result: ok. 4 passed`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Add `Rga::hydration_ops()` to rga.rs** (needed by Registry::connect in Task 6 to hydrate late-joining clients)
+
+```rust
+/// Returns Insert + Delete ops sufficient to replay the full current document state
+/// into a fresh RGA. Walk the linked list in order (including tombstones — needed
+/// so future ops can reference tombstoned nodes by s_k). For each tombstoned node,
+/// follow the Insert with a Delete.
+pub fn hydration_ops(&self) -> Vec<Op> {
+    let mut ops = Vec::new();
+    let mut prev: Option<S4Vector> = None;
+    let mut cur = self.head;
+    while let Some(idx) = cur {
+        let node = &self.nodes[idx];
+        ops.push(Op::Insert {
+            left: prev.clone(),
+            obj:  node.obj,
+            s_k:  node.s_k.clone(),
+        });
+        if node.tombstone {
+            ops.push(Op::Delete {
+                target: node.s_k.clone(),
+                s_k:    node.s_p.clone(), // s_p was set to the Delete op's S4Vector
+            });
+        }
+        prev = Some(node.s_k.clone());
+        cur = node.link;
+    }
+    ops
+}
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/crdt/rga.rs
-git commit -m "feat(crdt): implement remote_insert (Algorithm 8), findlist, to_string"
+git commit -m "feat(crdt): implement remote_insert (Algorithm 8), findlist, to_string, hydration_ops"
 ```
 
 ---
@@ -685,20 +716,24 @@ impl Registry {
     }
 
     /// Register a new client. Returns (rx channel, current canonical text for init msg).
-    /// New client starts with an empty RGA; the caller sends current text as `init`.
+    /// Hydrates the new client's RGA by replaying existing document ops (see hydration_ops),
+    /// so late joiners can delete and update pre-existing content correctly.
     pub async fn connect(&self, site_id: u64) -> (Rx, String) {
         let mut clients = self.inner.write().await;
         let (tx, rx) = mpsc::unbounded_channel::<String>();
 
-        let current_text = clients
-            .values()
-            .next()
-            .map(|c| c.rga.to_string())
-            .unwrap_or_default();
+        // Replay the existing document into the new client's RGA
+        let mut new_rga = Rga::new(site_id, 0);
+        if let Some(existing) = clients.values().next() {
+            for op in existing.rga.hydration_ops() {
+                new_rga.apply(op);
+            }
+        }
+        let current_text = new_rga.to_string();
 
         clients.insert(site_id, ClientInfo {
             tx,
-            rga: Rga::new(site_id, 0),
+            rga: new_rga,
             pending_ops: Vec::new(),
         });
 

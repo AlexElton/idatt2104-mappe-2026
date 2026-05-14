@@ -26,10 +26,18 @@ impl S4Vector {
         Self { ssn, sid, sum, seq }
     }
 
-    /// Returns true if self precedes other (self has lower priority than other).
-    /// Definition 9 from Roh et al. 2011.
+    /// Returns true if self has LOWER priority than other (Definition 9, Roh et al. 2011).
+    /// sa ≺ sb iff: sa.ssn < sb.ssn
+    ///           OR sa.ssn == sb.ssn AND sa.sum < sb.sum
+    ///           OR sa.ssn == sb.ssn AND sa.sum == sb.sum AND sa.sid < sb.sid
     pub fn precedes(&self, other: &S4Vector) -> bool {
-        todo!("implement s4vector ordering — see Definition 9 in the paper")
+        if self.ssn != other.ssn {
+            return self.ssn < other.ssn;
+        }
+        if self.sum != other.sum {
+            return self.sum < other.sum;
+        }
+        self.sid < other.sid
     }
 }
 

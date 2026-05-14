@@ -2,27 +2,28 @@ use crate::crdt::s4vector::S4Vector;
 
 /// A single node in the RGA linked list.
 ///
-/// `obj`  — the stored character; None means the node is a tombstone (deleted).
-/// `s_k`  — immutable s4vector set on Insert; used as the SVI hash key and
-///           for precedence ordering among concurrent Inserts (Algorithm 8).
-/// `s_p`  — mutable s4vector tracking the last eoperation on this node;
-///           updated by Delete and Update for precedence (Algorithms 9 & 10).
-/// `link` — index of the next node in the linked list (None = list tail).
-/// `next` — index of the next node in the SVI hash table chain (separate chaining).
+/// `obj`       — stored character; always present (tombstones keep their original char).
+/// `tombstone` — true means this node has been deleted (visible only to Algorithm 8).
+/// `s_k`       — immutable S4Vector set on Insert; used as SVI hash key and precedence key.
+/// `s_p`       — mutable S4Vector; updated by Delete/Update for precedence (Algorithms 9 & 10).
+/// `link`      — index of next node in linked list (None = tail).
+/// `next`      — index of next node in SVI hash chain (separate chaining, unused for now).
 #[derive(Debug, Clone)]
 pub struct Node {
-    pub obj:  Option<char>,
-    pub s_k:  S4Vector,
-    pub s_p:  S4Vector,
-    pub link: Option<usize>,
-    pub next: Option<usize>,
+    pub obj:       char,
+    pub tombstone: bool,
+    pub s_k:       S4Vector,
+    pub s_p:       S4Vector,
+    pub link:      Option<usize>,
+    pub next:      Option<usize>,
 }
 
 impl Node {
     pub fn new(obj: char, s_k: S4Vector) -> Self {
         Self {
-            obj:  Some(obj),
-            s_p:  s_k.clone(),
+            obj,
+            tombstone: false,
+            s_p: s_k.clone(),
             s_k,
             link: None,
             next: None,
@@ -30,6 +31,6 @@ impl Node {
     }
 
     pub fn is_tombstone(&self) -> bool {
-        self.obj.is_none()
+        self.tombstone
     }
 }
