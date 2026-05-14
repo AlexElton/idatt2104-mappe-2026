@@ -49,9 +49,13 @@ impl Rga {
         Some(Op::Delete { target, s_k })
     }
 
-    /// Replace the `pos`-th visible character with `obj`.
+    /// Replace the visible character at 0-indexed position pos with obj.
     pub fn local_update(&mut self, pos: usize, obj: char) -> Option<Op> {
-        todo!("findlist(pos) to get target node, build Op::Update with next_s4vector()")
+        let target_idx = self.findlist(pos + 1)?;
+        let target = self.nodes[target_idx].s_k.clone();
+        let s_k = self.next_s4vector();
+        self.remote_update(target.clone(), obj, s_k.clone());
+        Some(Op::Update { target, obj, s_k })
     }
 
     // -------------------------------------------------------------------------
@@ -101,20 +105,19 @@ impl Rga {
         }
     }
 
-    /// Algorithm 10 from Roh et al. 2011.
-    /// `target` — s_k of the node to update.
-    /// `obj`    — new character.
-    /// `s_o`    — this Update op's own s4vector (compared against node's s_p for precedence).
+    /// Algorithm 10 (Roh et al. 2011).
+    /// Replace obj if s_o has HIGHER priority than the node's current s_p.
+    /// If the node is already tombstoned (Delete won), do nothing.
     pub fn remote_update(&mut self, target: S4Vector, obj: char, s_o: S4Vector) {
-        todo!(
-            "
-            Find target in hash table.
-            If node is tombstone: do nothing (always Update --> Delete).
-            If s_o precedes node.s_p: do nothing (lost the race).
-            Otherwise: set node.obj = obj, node.s_p = s_o.
-            See Algorithm 10 in the paper.
-            "
-        )
+        if let Some(&idx) = self.hash.get(&target) {
+            if self.nodes[idx].is_tombstone() {
+                return; // Delete wins over Update
+            }
+            if self.nodes[idx].s_p.precedes(&s_o) {
+                self.nodes[idx].obj = obj;
+                self.nodes[idx].s_p = s_o;
+            }
+        }
     }
 
     /// Dispatch a remote Op to the correct algorithm.
@@ -339,8 +342,22 @@ mod tests {
         assert_eq!(rga1.to_string(), "");
     }
 
+    /// Concurrent Delete and Update on the same node: Delete wins (Algorithm 10).
     #[test]
     fn test_update_loses_to_delete() {
-        todo!()
+        let mut rga1 = Rga::new(1, 0);
+        let mut rga2 = Rga::new(2, 0);
+
+        let op_a = rga1.local_insert(0, 'a').unwrap();
+        rga2.apply(op_a);
+
+        let del_op = rga1.local_delete(0).unwrap();
+        let upd_op = rga2.local_update(0, 'z').unwrap();
+
+        rga1.apply(upd_op); // site 1 deleted first; update must lose
+        rga2.apply(del_op); // site 2 updated first; delete must win
+
+        assert_eq!(rga1.to_string(), "");
+        assert_eq!(rga2.to_string(), "");
     }
 }
