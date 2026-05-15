@@ -74,6 +74,8 @@
     function getCaretOffset(el) {
         const sel = window.getSelection();
         if (!sel || !sel.rangeCount) return 0;
+        const endContainer = sel.getRangeAt(0).endContainer;
+        if (!el.contains(endContainer)) return 0;
         const range = document.createRange();
         range.setStart(el, 0);
         range.setEnd(sel.getRangeAt(0).endContainer, sel.getRangeAt(0).endOffset);
@@ -187,11 +189,14 @@
     function doSync() {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         const currentText = getPlainText(editor);
-        const cursor = getCaretOffset(editor);
         const newOps = computeOps(prevText, currentText);
         pendingOps.push(...newOps);
         prevText = currentText;
-        ws.send(JSON.stringify({ type: 'ops', ops: pendingOps, cursor: cursor }));
+        const sel = window.getSelection();
+        const hasFocus = document.activeElement === editor && sel && sel.rangeCount > 0 && editor.contains(sel.getRangeAt(0).endContainer);
+        const payload = { type: 'ops', ops: pendingOps };
+        if (hasFocus) payload.cursor = getCaretOffset(editor);
+        ws.send(JSON.stringify(payload));
         pendingOps = [];
         countdown = intervalMs;
     }
