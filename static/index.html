@@ -335,14 +335,78 @@
         startSyncTimer();
     });
 
-    // Intercept Enter to prevent Chrome from inserting <div>/<p> block elements.
-    // execCommand routes through Chrome's own contenteditable pipeline (correct cursor
-    // tracking, no boundary-position artifacts). Chrome may emit <br> instead of a \n
-    // text node — getPlainText and getCaretOffset both handle that correctly.
+    // Intercept Enter: insert a literal \n into the text content so that
+    // white-space:pre-wrap renders it as a visual line break without Chrome
+    // adding <div> or <br> block elements.
+    //
+    // Root cause of the double-Enter bug:
+    //   Chrome refuses to place the editing caret *after* a trailing \n in a
+    //   text node.  Offset = length in "hello\n" is silently remapped to
+    //   offset 5 (before \n), so the next typed character lands on line 1.
+    //
+    // Fix: after inserting \n we place a zero-width no-break space sentinel
+    // (U+FEFF) immediately after it in the text.  This gives Chrome a real
+    // character to anchor the caret after \n, so the caret lands correctly on
+    // the new line.  A one-shot keydown listener removes the sentinel from the
+    // live DOM (searching for U+FEFF at the caret position) before the user's
+    // next character is inserted.
+    const SENTINEL = '﻿';
+
     editor.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') {
             e.preventDefault();
-            document.execCommand('insertText', false, '\n');
+            const sel = window.getSelection();
+            if (!sel || !sel.rangeCount) return;
+
+            // Delete any selected content first.
+            const range = sel.getRangeAt(0);
+            if (!range.collapsed) range.deleteContents();
+
+            const container = range.startContainer;
+            const offset    = range.startOffset;
+
+            if (container.nodeType === Node.TEXT_NODE) {
+                // Insert "\n" + SENTINEL directly into the text node data.
+                // Using insertData keeps everything in one node — no splits that
+                // Chrome can merge away.  The SENTINEL immediately after \n gives
+                // Chrome a real character to anchor the caret on the new line.
+                container.insertData(offset, '\n' + SENTINEL);
+                // Place caret right after \n, before SENTINEL (offset + 1).
+                const newRange = document.createRange();
+                newRange.setStart(container, offset + 1);
+                newRange.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(newRange);
+            } else {
+                // Cursor is between element children — insert \n + SENTINEL node.
+                const nl  = document.createTextNode('\n' + SENTINEL);
+                const ref = container.childNodes[offset] || null;
+                container.insertBefore(nl, ref);
+                const newRange = document.createRange();
+                newRange.setStart(nl, 1);   // after \n, before SENTINEL
+                newRange.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(newRange);
+            }
+
+            // One-shot listener: strip the SENTINEL *after* the next character
+            // has been inserted by the browser.  We use the 'input' event which
+            // fires after the DOM has been mutated, so Chrome has already placed
+            // the typed character between \n and SENTINEL — giving us "hello\nX﻿".
+            // We then search for and remove the U+FEFF from the live DOM.
+            editor.addEventListener('input', function removeSentinel() {
+                // Find U+FEFF anywhere in the editor's text nodes and remove it.
+                const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode())) {
+                    const idx = node.data.indexOf(SENTINEL);
+                    if (idx !== -1) {
+                        node.deleteData(idx, 1);
+                        break;
+                    }
+                }
+                editor.removeEventListener('input', removeSentinel);
+            });
         }
     });
 
