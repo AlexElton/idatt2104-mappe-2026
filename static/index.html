@@ -224,7 +224,7 @@
     // ---------------------------------------------------------------------------
     function doSync() {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const currentText = getPlainText(editor);
+        const currentText = getPlainText(editor).replace(/﻿/g, '');
         const newOps = computeOps(prevText, currentText);
         pendingOps.push(...newOps);
         prevText = currentText;

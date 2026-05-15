@@ -14,3 +14,8 @@ CLAUDE.md
 
 # Cargo.lock — keep for binary crates, ignored here per project preference
 Cargo.lock
+
+# Superpowers brainstorm sessions (local only)
+.superpowers/
+
+/.playwright-mcp
