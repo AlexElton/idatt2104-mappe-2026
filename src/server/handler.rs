@@ -134,7 +134,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 .map(|o| ClientOp { op: o.op, pos: o.pos, ch: o.ch })
                 .collect();
 
-            registry.process_sync(site_id, ops).await;
+            registry.process_sync(site_id, ops, None /* TODO Task 2: extract cursor from message */).await;
         }
     });
 

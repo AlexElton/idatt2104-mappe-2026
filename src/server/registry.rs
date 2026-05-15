@@ -17,7 +17,8 @@ pub struct ClientOp {
 struct ClientInfo {
     tx:          Tx,
     rga:         Rga,
-    pending_ops: Vec<Op>, // remote ops queued until this client's next sync
+    pending_ops: Vec<Op>,       // remote ops queued until this client's next sync
+    cursor_pos:  Option<usize>, // LWW register: last reported caret position
 }
 
 /// Server → client: broadcast after every sync.
@@ -27,6 +28,7 @@ struct StateMsg<'a> {
     msg_type: &'static str,
     text:     &'a str,
     clients:  usize,
+    cursors:  HashMap<u64, usize>,
 }
 
 #[derive(Clone, Default)]
@@ -59,6 +61,7 @@ impl Registry {
             tx,
             rga: new_rga,
             pending_ops: Vec::new(),
+            cursor_pos:  None,
         });
 
         println!("[INFO] site {} connected ({} clients)", site_id, clients.len());
@@ -78,12 +81,18 @@ impl Registry {
     /// Step 2: queue the resulting S4Vector ops into every OTHER client's pending_ops.
     /// Step 3: drain X's accumulated pending remote ops and apply them to X's RGA.
     /// Step 4: broadcast canonical state to all clients.
-    pub async fn process_sync(&self, from_site: u64, ops: Vec<ClientOp>) {
+    pub async fn process_sync(&self, from_site: u64, ops: Vec<ClientOp>, cursor: Option<usize>) {
         let mut clients = self.inner.write().await;
 
         if !clients.contains_key(&from_site) {
             eprintln!("[WARN] process_sync for unknown site {}", from_site);
             return;
+        }
+
+        // LWW write — overwrite unconditionally; sequential write lock enforces ordering.
+        // Reference: Shapiro et al. 2011, Section 3.1 (LWW Register).
+        if let Some(pos) = cursor {
+            clients.get_mut(&from_site).unwrap().cursor_pos = Some(pos);
         }
 
         // Step 1 — local ops → S4Vector ops
@@ -130,10 +139,15 @@ impl Registry {
         // Step 4 — broadcast canonical state to all
         let canonical = clients[&from_site].rga.to_string();
         let count = clients.len();
+        let cursors: HashMap<u64, usize> = clients
+            .iter()
+            .filter_map(|(sid, c)| c.cursor_pos.map(|pos| (*sid, pos)))
+            .collect();
         let json = serde_json::to_string(&StateMsg {
             msg_type: "state",
             text:     &canonical,
             clients:  count,
+            cursors,
         })
         .expect("serialize StateMsg");
 
@@ -169,5 +183,85 @@ impl Registry {
                 println!("[INFO] [GC] pruned tombstone {}", s_k);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_cursor_lww_overwrite() {
+        let registry = Registry::new();
+        let (mut _rx1, _) = registry.connect(1).await;
+        let (mut rx2, _) = registry.connect(2).await;
+
+        registry.process_sync(1, vec![], Some(5)).await;
+        registry.process_sync(1, vec![], Some(10)).await;
+
+        let msg1: serde_json::Value =
+            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let msg2: serde_json::Value =
+            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+
+        assert_eq!(msg1["cursors"]["1"], 5);
+        assert_eq!(msg2["cursors"]["1"], 10);
+    }
+
+    #[tokio::test]
+    async fn test_cursor_none_preserves_previous() {
+        let registry = Registry::new();
+        let (mut _rx1, _) = registry.connect(1).await;
+        let (mut rx2, _) = registry.connect(2).await;
+
+        registry.process_sync(1, vec![], Some(7)).await;
+        registry.process_sync(1, vec![], None).await;
+
+        let _: serde_json::Value =
+            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let msg2: serde_json::Value =
+            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+
+        assert_eq!(msg2["cursors"]["1"], 7);
+    }
+
+    #[tokio::test]
+    async fn test_cursor_broadcast_includes_all_sites() {
+        let registry = Registry::new();
+        let (mut rx1, _) = registry.connect(1).await;
+        let (mut _rx2, _) = registry.connect(2).await;
+
+        registry.process_sync(1, vec![], Some(3)).await;
+        registry.process_sync(2, vec![], Some(8)).await;
+
+        let _: serde_json::Value =
+            serde_json::from_str(&rx1.try_recv().unwrap()).unwrap();
+        let msg2: serde_json::Value =
+            serde_json::from_str(&rx1.try_recv().unwrap()).unwrap();
+
+        assert_eq!(msg2["cursors"]["1"], 3);
+        assert_eq!(msg2["cursors"]["2"], 8);
+    }
+
+    #[tokio::test]
+    async fn test_cursor_cleared_on_disconnect() {
+        let registry = Registry::new();
+        let (mut _rx1, _) = registry.connect(1).await;
+        let (mut rx2, _) = registry.connect(2).await;
+
+        registry.process_sync(1, vec![], Some(5)).await;
+        let _: serde_json::Value =
+            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+
+        registry.disconnect(1).await;
+        registry.process_sync(2, vec![], Some(2)).await;
+
+        let msg: serde_json::Value =
+            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+
+        assert!(
+            msg["cursors"].get("1").is_none(),
+            "disconnected site should not appear in cursors"
+        );
     }
 }
