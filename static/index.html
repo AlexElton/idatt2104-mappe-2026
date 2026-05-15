@@ -8,8 +8,12 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; display: flex; flex-direction: column; align-items: center; padding: 2rem; min-height: 100vh; }
     h2 { margin-bottom: 1rem; font-size: 1.1rem; letter-spacing: 0.05em; color: #9cdcfe; }
-    #editor { width: 700px; height: 300px; background: #252526; color: #d4d4d4; border: 1px solid #3c3c3c; padding: 0.75rem; font-family: monospace; font-size: 0.95rem; resize: vertical; outline: none; }
+    #editor { width: 700px; height: 300px; background: #252526; color: #d4d4d4; border: 1px solid #3c3c3c; padding: 0.75rem; font-family: monospace; font-size: 0.95rem; outline: none; overflow-y: auto; white-space: pre-wrap; word-break: break-all; box-sizing: border-box; cursor: text; }
     #editor:focus { border-color: #007acc; }
+    .peer-cursor { display: inline-block; width: 0; border-left: 2px solid currentColor; margin: 0 -1px; pointer-events: none; vertical-align: text-bottom; height: 1em; }
+    #peers { width: 700px; margin-top: 0.25rem; font-size: 0.8rem; color: #858585; min-height: 1.2em; display: flex; gap: 1rem; flex-wrap: wrap; }
+    .peer-label { display: flex; align-items: center; gap: 0.3rem; }
+    .peer-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     #status { width: 700px; margin-top: 0.5rem; font-size: 0.8rem; color: #858585; display: flex; justify-content: space-between; }
     #controls { width: 700px; margin-top: 1rem; display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; }
     #interval-label { white-space: nowrap; }
@@ -18,11 +22,12 @@
 </head>
 <body>
   <h2>RGA Collaborative Editor</h2>
-  <textarea id="editor" placeholder="Start typing..."></textarea>
+  <div id="editor" contenteditable="true" spellcheck="false"></div>
   <div id="status">
-    <span id="conn-status">🔴 Connecting...</span>
+    <span id="conn-status">&#x1F534; Connecting...</span>
     <span id="sync-status">-</span>
   </div>
+  <div id="peers"></div>
   <div id="controls">
     <label id="interval-label">Sync interval: <strong id="interval-val">1000</strong>ms</label>
     <input type="range" id="interval" min="100" max="5000" step="100" value="1000" />
@@ -32,131 +37,249 @@
     const editor      = document.getElementById('editor');
     const connStatus  = document.getElementById('conn-status');
     const syncStatus  = document.getElementById('sync-status');
+    const peersEl     = document.getElementById('peers');
     const intervalEl  = document.getElementById('interval');
     const intervalVal = document.getElementById('interval-val');
 
+    const PEER_COLORS = ['#4ec9b0', '#ce9178', '#dcdcaa', '#9cdcfe', '#c586c0', '#f44747'];
+
     let ws;
-    let siteId       = null;
-    let prevText     = '';
-    let pendingOps   = [];
-    let intervalMs   = 1000;
-    let syncTimer    = null;
-    let countdown    = 0;
+    let siteId     = null;
+    let prevText   = '';
+    let pendingOps = [];
+    let intervalMs = 1000;
+    let syncTimer  = null;
+    let countdown  = 0;
 
-    // -----------------------------------------------------------------------
-    // Text diff — generates minimal insert/delete op list (prefix/suffix trim).
-    // Deletes are emitted in reverse order (high → low) so positions stay stable.
-    // Inserts are in forward order matching positions in the new string.
-    // -----------------------------------------------------------------------
-    function computeOps(oldText, newText) {
-      if (oldText === newText) return [];
-      const ops = [];
+    // ---------------------------------------------------------------------------
+    // Text / caret helpers for contenteditable
+    // ---------------------------------------------------------------------------
 
-      // Common prefix
-      let pre = 0;
-      while (pre < oldText.length && pre < newText.length && oldText[pre] === newText[pre]) pre++;
-
-      // Common suffix
-      let oldEnd = oldText.length, newEnd = newText.length;
-      while (oldEnd > pre && newEnd > pre && oldText[oldEnd - 1] === newText[newEnd - 1]) {
-        oldEnd--; newEnd--;
-      }
-
-      // Deletes (reverse order so indices stay valid)
-      for (let i = oldEnd - 1; i >= pre; i--) ops.push({ op: 'delete', pos: i });
-
-      // Inserts (forward order; positions reference the new string)
-      for (let i = pre; i < newEnd; i++) ops.push({ op: 'insert', pos: i, char: newText[i] });
-
-      return ops;
+    // Extract plain text, skipping peer-cursor spans.
+    function getPlainText(el) {
+        let text = '';
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+                return node.parentElement.classList.contains('peer-cursor')
+                    ? NodeFilter.FILTER_REJECT
+                    : NodeFilter.FILTER_ACCEPT;
+            }
+        });
+        let node;
+        while ((node = walker.nextNode())) text += node.textContent;
+        return text;
     }
 
-    // -----------------------------------------------------------------------
-    // Sync — send pending ops to server
-    // -----------------------------------------------------------------------
-    function doSync() {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const currentText = editor.value;
-      const newOps = computeOps(prevText, currentText);
-      pendingOps.push(...newOps);
-      prevText = currentText;
+    // Return caret position as a plain-text character offset (skipping peer-cursor spans).
+    function getCaretOffset(el) {
+        const sel = window.getSelection();
+        if (!sel || !sel.rangeCount) return 0;
+        const range = document.createRange();
+        range.setStart(el, 0);
+        range.setEnd(sel.getRangeAt(0).endContainer, sel.getRangeAt(0).endOffset);
+        const fragment = range.cloneContents();
+        // Remove cursor spans from the cloned range before counting characters.
+        fragment.querySelectorAll('.peer-cursor').forEach(s => s.remove());
+        return fragment.textContent.length;
+    }
 
-      if (pendingOps.length > 0) {
-        ws.send(JSON.stringify({ type: 'ops', ops: pendingOps }));
+    // Place the caret at a plain-text character offset (skipping peer-cursor spans).
+    function setCaretOffset(el, offset) {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+                return node.parentElement.classList.contains('peer-cursor')
+                    ? NodeFilter.FILTER_REJECT
+                    : NodeFilter.FILTER_ACCEPT;
+            }
+        });
+        let remaining = offset;
+        let node;
+        while ((node = walker.nextNode())) {
+            if (remaining <= node.textContent.length) {
+                const range = document.createRange();
+                range.setStart(node, remaining);
+                range.collapse(true);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                return;
+            }
+            remaining -= node.textContent.length;
+        }
+        // Fallback: end of content.
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }
+
+    // Build safe HTML from plain text + peer cursor positions.
+    // Every character of `text` is HTML-escaped before insertion (&, <, >, newline).
+    // Cursor span attributes use only the integer `sid` value from the server —
+    // no user-controlled strings appear in attribute positions.
+    function buildEditorHtml(text, peers) {
+        const sorted = [...peers].sort((a, b) => a.pos - b.pos);
+        let html = '';
+        let peerIdx = 0;
+        for (let i = 0; i <= text.length; i++) {
+            // Insert all cursors positioned exactly at character i.
+            while (peerIdx < sorted.length && sorted[peerIdx].pos === i) {
+                const { sid } = sorted[peerIdx];
+                const color = PEER_COLORS[sid % PEER_COLORS.length];
+                html += '<span class="peer-cursor" data-site="' + sid + '" contenteditable="false" style="color:' + color + '" title="Site #' + sid + '"></span>';
+                peerIdx++;
+            }
+            if (i < text.length) {
+                const ch = text[i];
+                if      (ch === '&')  html += '&amp;';
+                else if (ch === '<')  html += '&lt;';
+                else if (ch === '>')  html += '&gt;';
+                else if (ch === '\n') html += '<br>';
+                else                  html += ch;
+            }
+        }
+        return html;
+    }
+
+    // Update the peers legend panel below the editor.
+    function renderPeersPanel(cursors) {
+        if (!cursors || Object.keys(cursors).length === 0) {
+            peersEl.textContent = '';
+            return;
+        }
+        // Build panel using DOM methods (no innerHTML with user data).
+        while (peersEl.firstChild) peersEl.removeChild(peersEl.firstChild);
+        for (const [sid, pos] of Object.entries(cursors)) {
+            if (Number(sid) === siteId) continue;
+            const color = PEER_COLORS[Number(sid) % PEER_COLORS.length];
+            const label = document.createElement('span');
+            label.className = 'peer-label';
+            const dot = document.createElement('span');
+            dot.className = 'peer-dot';
+            dot.style.background = color;
+            const txt = document.createTextNode('Site #' + sid + ' @ ' + pos);
+            label.appendChild(dot);
+            label.appendChild(txt);
+            peersEl.appendChild(label);
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Text diff — unchanged from original implementation
+    // ---------------------------------------------------------------------------
+    function computeOps(oldText, newText) {
+        if (oldText === newText) return [];
+        const ops = [];
+        let pre = 0;
+        while (pre < oldText.length && pre < newText.length && oldText[pre] === newText[pre]) pre++;
+        let oldEnd = oldText.length, newEnd = newText.length;
+        while (oldEnd > pre && newEnd > pre && oldText[oldEnd - 1] === newText[newEnd - 1]) { oldEnd--; newEnd--; }
+        for (let i = oldEnd - 1; i >= pre; i--) ops.push({ op: 'delete', pos: i });
+        for (let i = pre; i < newEnd; i++) ops.push({ op: 'insert', pos: i, char: newText[i] });
+        return ops;
+    }
+
+    // ---------------------------------------------------------------------------
+    // Sync
+    // ---------------------------------------------------------------------------
+    function doSync() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const currentText = getPlainText(editor);
+        const cursor = getCaretOffset(editor);
+        const newOps = computeOps(prevText, currentText);
+        pendingOps.push(...newOps);
+        prevText = currentText;
+        ws.send(JSON.stringify({ type: 'ops', ops: pendingOps, cursor: cursor }));
         pendingOps = [];
-      }
-      countdown = intervalMs;
+        countdown = intervalMs;
     }
 
     function startSyncTimer() {
-      if (syncTimer) clearInterval(syncTimer);
-      syncTimer = setInterval(doSync, intervalMs);
-      countdown = intervalMs;
+        if (syncTimer) clearInterval(syncTimer);
+        syncTimer = setInterval(doSync, intervalMs);
+        countdown = intervalMs;
     }
 
     // Countdown display — updates every 100ms
-    setInterval(() => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      countdown = Math.max(0, countdown - 100);
-      syncStatus.textContent = `Next sync: ${(countdown / 1000).toFixed(1)}s | Site #${siteId ?? '?'}`;
+    setInterval(function() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        countdown = Math.max(0, countdown - 100);
+        syncStatus.textContent = 'Next sync: ' + (countdown / 1000).toFixed(1) + 's | Site #' + (siteId !== null ? siteId : '?');
     }, 100);
 
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
+    // Apply state from server
+    // ---------------------------------------------------------------------------
+    function applyState(newText, cursors) {
+        const focused = document.activeElement === editor;
+        const caretPos = focused ? getCaretOffset(editor) : null;
+
+        const peers = Object.entries(cursors || {})
+            .filter(function(entry) { return Number(entry[0]) !== siteId; })
+            .map(function(entry) {
+                return { sid: Number(entry[0]), pos: Math.min(Number(entry[1]), newText.length) };
+            });
+
+        // buildEditorHtml escapes all text content — innerHTML assignment is safe here.
+        editor.innerHTML = buildEditorHtml(newText, peers);
+
+        if (focused && caretPos !== null) {
+            setCaretOffset(editor, Math.min(caretPos, newText.length));
+        }
+
+        renderPeersPanel(cursors);
+        prevText = newText;
+        pendingOps = [];
+    }
+
+    // ---------------------------------------------------------------------------
     // WebSocket
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     function connect() {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      ws = new WebSocket(`${proto}://${location.host}/ws`);
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        ws = new WebSocket(proto + '://' + location.host + '/ws');
 
-      ws.onopen = () => {
-        connStatus.textContent = '🟢 Connected';
-        startSyncTimer();
-      };
+        ws.onopen = function() {
+            connStatus.textContent = '🟢 Connected';
+            startSyncTimer();
+        };
 
-      ws.onclose = () => {
-        connStatus.textContent = '🔴 Disconnected';
-        if (syncTimer) clearInterval(syncTimer);
-        setTimeout(connect, 2000);
-      };
+        ws.onclose = function() {
+            connStatus.textContent = '🔴 Disconnected';
+            if (syncTimer) clearInterval(syncTimer);
+            setTimeout(connect, 2000);
+        };
 
-      ws.onerror = () => {
-        connStatus.textContent = '🔴 Error';
-      };
+        ws.onerror = function() {
+            connStatus.textContent = '🔴 Error';
+        };
 
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
+        ws.onmessage = function(event) {
+            const msg = JSON.parse(event.data);
 
-        if (msg.type === 'init') {
-          siteId = msg.site_id;
-          applyState(msg.text);
-          connStatus.textContent = `🟢 Connected · Site #${siteId}`;
-          return;
-        }
+            if (msg.type === 'init') {
+                siteId = msg.site_id;
+                applyState(msg.text, {});
+                connStatus.textContent = '🟢 Connected · Site #' + siteId;
+                return;
+            }
 
-        if (msg.type === 'state') {
-          applyState(msg.text);
-          connStatus.textContent = `🟢 Connected · Site #${siteId} · ${msg.clients} client${msg.clients !== 1 ? 's' : ''}`;
-        }
-      };
+            if (msg.type === 'state') {
+                applyState(msg.text, msg.cursors || {});
+                connStatus.textContent = '🟢 Connected · Site #' + siteId + ' · ' + msg.clients + ' client' + (msg.clients !== 1 ? 's' : '');
+            }
+        };
     }
 
-    function applyState(newText) {
-      if (editor.value === newText) return;
-      const sel = editor.selectionStart;
-      editor.value = newText;
-      // Clamp cursor to new length; preserve position when possible
-      editor.setSelectionRange(Math.min(sel, newText.length), Math.min(sel, newText.length));
-      prevText = newText;
-      pendingOps = []; // server is now canonical
-    }
-
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // Slider
-    // -----------------------------------------------------------------------
-    intervalEl.addEventListener('input', () => {
-      intervalMs = parseInt(intervalEl.value, 10);
-      intervalVal.textContent = intervalMs;
-      startSyncTimer();
+    // ---------------------------------------------------------------------------
+    intervalEl.addEventListener('input', function() {
+        intervalMs = parseInt(intervalEl.value, 10);
+        intervalVal.textContent = intervalMs;
+        startSyncTimer();
     });
 
     connect();
