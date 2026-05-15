@@ -144,14 +144,25 @@ impl Registry {
         }
 
         // Step 5 — GC pass: prune tombstones acknowledged by all connected clients.
-        // A tombstone is safe to remove when every client RGA has it marked tombstoned
-        // (i.e., no client's pending_ops can still reference it as a left cobject).
-        // Runs inside the write lock — no extra synchronisation needed.
+        // A tombstone at s_k is safe to remove iff:
+        //   (a) every client RGA has s_k tombstoned, AND
+        //   (b) no client's pending_ops contains Insert{left: Some(s_k)}.
+        // Condition (b) guards against a race: a peer may have generated
+        // Insert{left=s_k} before learning of the Delete, queued it here, but not
+        // yet had it applied to its RGA. If we GC while that Insert is pending,
+        // remote_insert finds no anchor and falls back to head → divergence.
         // Reference: Section 5.6, Roh et al. 2011.
         let site_ids: Vec<u64> = clients.keys().copied().collect();
         let candidates = clients[&from_site].rga.tombstoned_keys();
         for s_k in candidates {
-            if site_ids.iter().all(|sid| clients[sid].rga.is_tombstoned(&s_k)) {
+            let safe = site_ids.iter().all(|sid| {
+                let c = &clients[sid];
+                c.rga.is_tombstoned(&s_k)
+                    && !c.pending_ops.iter().any(|op| {
+                        matches!(op, Op::Insert { left: Some(l), .. } if l == &s_k)
+                    })
+            });
+            if safe {
                 for sid in &site_ids {
                     clients.get_mut(sid).unwrap().rga.gc_node(&s_k);
                 }
