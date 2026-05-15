@@ -287,6 +287,16 @@
         startSyncTimer();
     });
 
+    // Intercept Enter so the browser doesn't insert <div>/<br> elements.
+    // Insert a literal \n text node instead — getPlainText reads it correctly
+    // and white-space: pre-wrap renders it as a line break.
+    editor.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            document.execCommand('insertText', false, '\n');
+        }
+    });
+
     connect();
   </script>
 </body>
