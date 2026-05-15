@@ -198,6 +198,28 @@ impl Rga {
         }
         ops
     }
+
+    /// Returns the s_k of every tombstoned node, in linked-list order.
+    /// Used by the GC pass to find candidates (Section 5.6, Roh et al. 2011).
+    pub fn tombstoned_keys(&self) -> Vec<S4Vector> {
+        let mut keys = Vec::new();
+        let mut cur = self.head;
+        while let Some(idx) = cur {
+            if self.nodes[idx].tombstone {
+                keys.push(self.nodes[idx].s_k.clone());
+            }
+            cur = self.nodes[idx].link;
+        }
+        keys
+    }
+
+    /// Returns true iff the node identified by `s_k` exists and is tombstoned.
+    /// Returns false if the node does not exist (not yet received = not safe to GC).
+    pub fn is_tombstoned(&self, s_k: &S4Vector) -> bool {
+        self.hash.get(s_k)
+            .map(|&idx| self.nodes[idx].tombstone)
+            .unwrap_or(false)
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -359,5 +381,57 @@ mod tests {
 
         assert_eq!(rga1.to_string(), "");
         assert_eq!(rga2.to_string(), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tombstone GC tests (Task 1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tombstoned_keys_empty_rga() {
+        let rga = Rga::new(1, 0);
+        assert!(rga.tombstoned_keys().is_empty());
+    }
+
+    #[test]
+    fn test_tombstoned_keys_live_nodes_not_included() {
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s4v(0, 1, 1));
+        rga.remote_insert(None, 'b', s4v(0, 1, 2));
+        assert!(rga.tombstoned_keys().is_empty());
+    }
+
+    #[test]
+    fn test_tombstoned_keys_after_delete() {
+        let s_a = s4v(0, 1, 1);
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s_a.clone());
+        rga.remote_delete(s_a.clone(), s4v(0, 1, 2));
+        let keys = rga.tombstoned_keys();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], s_a);
+    }
+
+    #[test]
+    fn test_is_tombstoned_unknown_key_returns_false() {
+        let rga = Rga::new(1, 0);
+        assert!(!rga.is_tombstoned(&s4v(0, 1, 99)));
+    }
+
+    #[test]
+    fn test_is_tombstoned_live_node_returns_false() {
+        let s_a = s4v(0, 1, 1);
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s_a.clone());
+        assert!(!rga.is_tombstoned(&s_a));
+    }
+
+    #[test]
+    fn test_is_tombstoned_deleted_node_returns_true() {
+        let s_a = s4v(0, 1, 1);
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s_a.clone());
+        rga.remote_delete(s_a.clone(), s4v(0, 1, 2));
+        assert!(rga.is_tombstoned(&s_a));
     }
 }
