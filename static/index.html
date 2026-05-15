@@ -263,16 +263,28 @@
                 return { sid: Number(entry[0]), pos: Math.min(Number(entry[1]), newText.length) };
             });
 
-        // buildEditorHtml escapes all text content — innerHTML assignment is safe here.
-        editor.innerHTML = buildEditorHtml(newText, peers);
-
-        if (focused && caretPos !== null) {
-            setCaretOffset(editor, Math.min(caretPos, newText.length));
+        if (newText !== prevText) {
+            // Text changed: rebuild from authoritative server state.
+            // buildEditorHtml escapes all text content — innerHTML assignment is safe here.
+            editor.innerHTML = buildEditorHtml(newText, peers);
+            if (focused && caretPos !== null) {
+                setCaretOffset(editor, Math.min(caretPos, newText.length));
+            }
+            prevText = newText;
+            pendingOps = [];
+        } else {
+            // Text unchanged — this is a cursor-presence-only broadcast (another client
+            // synced with no text ops). Preserve any locally typed characters that haven't
+            // been sent to the server yet; only redraw the peer-cursor overlays.
+            const localText = getPlainText(editor);
+            editor.innerHTML = buildEditorHtml(localText, peers);
+            if (focused && caretPos !== null) {
+                setCaretOffset(editor, Math.min(caretPos, localText.length));
+            }
+            // prevText and pendingOps are unchanged; next doSync picks up local edits.
         }
 
         renderPeersPanel(cursors);
-        prevText = newText;
-        pendingOps = [];
     }
 
     // ---------------------------------------------------------------------------
