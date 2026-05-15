@@ -23,6 +23,7 @@ struct ClientOpsMsg {
     #[serde(rename = "type")]
     msg_type: String,
     ops: Vec<ClientOpJson>,
+    cursor: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,7 +135,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 .map(|o| ClientOp { op: o.op, pos: o.pos, ch: o.ch })
                 .collect();
 
-            registry.process_sync(site_id, ops, None /* TODO Task 2: extract cursor from message */).await;
+            registry.process_sync(site_id, ops, parsed.cursor).await;
         }
     });
 
