@@ -11,7 +11,7 @@ use axum::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         State,
     },
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     routing::get,
     Router,
 };
@@ -69,13 +69,13 @@ impl AppState {
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/", get(serve_index))
+        .route("/api/health", get(health))
         .route("/ws", get(ws_handler))
         .with_state(state)
 }
 
-async fn serve_index() -> Html<&'static str> {
-    Html(include_str!("../../static/index.html"))
+async fn health() -> &'static str {
+    "ok"
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
