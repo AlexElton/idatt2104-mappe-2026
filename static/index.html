@@ -78,7 +78,18 @@
         return text;
     }
 
+    // Count characters in a DOM subtree, treating <br> as '\n' (1 char).
+    // Used by getCaretOffset so Chrome-inserted <br> elements don't throw off the offset.
+    function countContent(node) {
+        if (node.nodeName === 'BR') return 1;
+        if (node.nodeType === Node.TEXT_NODE) return node.textContent.length;
+        let n = 0;
+        for (const child of node.childNodes) n += countContent(child);
+        return n;
+    }
+
     // Return caret position as a plain-text character offset (skipping peer-cursor spans).
+    // Counts <br> elements as 1 to handle Chrome inserting <br> for newlines.
     function getCaretOffset(el) {
         const sel = window.getSelection();
         if (!sel || !sel.rangeCount) return 0;
@@ -88,33 +99,50 @@
         range.setStart(el, 0);
         range.setEnd(sel.getRangeAt(0).endContainer, sel.getRangeAt(0).endOffset);
         const fragment = range.cloneContents();
-        // Remove cursor spans from the cloned range before counting characters.
         fragment.querySelectorAll('.peer-cursor').forEach(s => s.remove());
-        return fragment.textContent.length;
+        return countContent(fragment);
     }
 
     // Place the caret at a plain-text character offset (skipping peer-cursor spans).
+    // Handles <br> elements as 1-char positions for symmetry with getCaretOffset.
     function setCaretOffset(el, offset) {
-        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
             acceptNode(node) {
-                return node.parentElement.classList.contains('peer-cursor')
-                    ? NodeFilter.FILTER_REJECT
-                    : NodeFilter.FILTER_ACCEPT;
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    if (node.classList && node.classList.contains('peer-cursor')) return NodeFilter.FILTER_REJECT;
+                    if (node.nodeName === 'BR') return NodeFilter.FILTER_ACCEPT;
+                    return NodeFilter.FILTER_SKIP;
+                }
+                if (node.parentElement && node.parentElement.classList.contains('peer-cursor')) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
             }
         });
         let remaining = offset;
         let node;
         while ((node = walker.nextNode())) {
-            if (remaining <= node.textContent.length) {
-                const range = document.createRange();
-                range.setStart(node, remaining);
-                range.collapse(true);
-                const sel = window.getSelection();
-                sel.removeAllRanges();
-                sel.addRange(range);
-                return;
+            if (node.nodeName === 'BR') {
+                if (remaining === 0) {
+                    const range = document.createRange();
+                    range.setStartBefore(node);
+                    range.collapse(true);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    return;
+                }
+                remaining -= 1;
+            } else {
+                if (remaining <= node.textContent.length) {
+                    const range = document.createRange();
+                    range.setStart(node, remaining);
+                    range.collapse(true);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    return;
+                }
+                remaining -= node.textContent.length;
             }
-            remaining -= node.textContent.length;
         }
         // Fallback: end of content.
         const range = document.createRange();
@@ -295,21 +323,14 @@
         startSyncTimer();
     });
 
-    // Intercept Enter: directly insert a \n text node via Selection API.
-    // execCommand('insertText') produces <br> in Chrome, which getPlainText misses → sync revert.
+    // Intercept Enter to prevent Chrome from inserting <div>/<p> block elements.
+    // execCommand routes through Chrome's own contenteditable pipeline (correct cursor
+    // tracking, no boundary-position artifacts). Chrome may emit <br> instead of a \n
+    // text node — getPlainText and getCaretOffset both handle that correctly.
     editor.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') {
             e.preventDefault();
-            const sel = window.getSelection();
-            if (!sel || !sel.rangeCount) return;
-            const range = sel.getRangeAt(0);
-            range.deleteContents();
-            const textNode = document.createTextNode('\n');
-            range.insertNode(textNode);
-            range.setStartAfter(textNode);
-            range.collapse(true);
-            sel.removeAllRanges();
-            sel.addRange(range);
+            document.execCommand('insertText', false, '\n');
         }
     });
 
