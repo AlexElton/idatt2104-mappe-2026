@@ -2,12 +2,22 @@
   "name": "nettverk",
   "private": true,
   "scripts": {
-    "bootstrap:wasm": "wasm-pack build --target bundler --dev crates/core",
-    "build:wasm": "wasm-pack build --target bundler --release crates/core",
-    "build:web": "pnpm build:wasm && pnpm --filter web build",
-    "build:backend": "cargo build --release -p backend",
-    "dev:web": "pnpm --filter web dev",
-    "dev:backend": "cargo run -p backend"
+    "build": "nx run-many -t build --parallel=2",
+    "dev": "nx run rga-core:build-dev && nx run-many -t dev --parallel=2",
+    "build:wasm": "nx run rga-core:build",
+    "build:web": "nx run web:build",
+    "build:backend": "nx run backend:build",
+    "dev:web": "nx run web:dev",
+    "dev:backend": "nx run backend:dev"
+  },
+  "devDependencies": {
+    "nx": "^22.7.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "nx"
+    ]
   },
   "packageManager": "pnpm@10.33.0"
 }
