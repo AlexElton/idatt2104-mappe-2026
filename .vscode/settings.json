@@ -1,0 +1,18 @@
+{
+  "editor.defaultFormatter": "oxc.oxc-vscode",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.oxc": "always",
+  },
+  "oxc.enable": true,
+  "oxc.enable.oxfmt": true,
+  "oxc.enable.oxlint": true,
+  "oxc.fmt.configPath": ".oxfmtrc.json",
+  "oxc.configPath": ".oxlintrc.json",
+
+  "eslint.enable": false,
+  "prettier.enable": false,
+
+  "[javascript][javascriptreact][json][jsonc][typescript][typescriptreact]": {
+    "editor.defaultFormatter": "oxc.oxc-vscode"
+  },
+}

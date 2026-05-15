@@ -37,7 +37,7 @@ export function getPlainText(el: HTMLElement): string {
 
   let node = walker.nextNode();
   while (node) {
-    text += node.nodeName === "BR" ? "\n" : node.textContent ?? "";
+    text += node.nodeName === "BR" ? "\n" : (node.textContent ?? "");
     node = walker.nextNode();
   }
 

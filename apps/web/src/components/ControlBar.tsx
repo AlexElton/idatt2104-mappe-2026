@@ -3,9 +3,7 @@ import { useCollaborationStore } from "../stores/collaborationStore";
 export function ControlBar() {
   const syncIntervalMs = useCollaborationStore((state) => state.syncIntervalMs);
   const countdownMs = useCollaborationStore((state) => state.countdownMs);
-  const setSyncIntervalMs = useCollaborationStore(
-    (state) => state.setSyncIntervalMs,
-  );
+  const setSyncIntervalMs = useCollaborationStore((state) => state.setSyncIntervalMs);
 
   return (
     <footer className="flex flex-col gap-4 border-t p-5 text-sm md:flex-row md:items-center md:justify-between">
@@ -19,9 +17,7 @@ export function ControlBar() {
           max="5000"
           step="100"
           value={syncIntervalMs}
-          onChange={(event) =>
-            setSyncIntervalMs(Number(event.currentTarget.value))
-          }
+          onChange={(event) => setSyncIntervalMs(Number(event.currentTarget.value))}
         />
       </label>
       <div>Next sync: {(countdownMs / 1000).toFixed(1)}s</div>

@@ -1,5 +1,11 @@
 import { useCollaborationStore } from "../stores/collaborationStore";
-import { buildEditorHtml, getCaretOffset, getPlainText, SENTINEL, setCaretOffset } from "./editorDom";
+import {
+  buildEditorHtml,
+  getCaretOffset,
+  getPlainText,
+  SENTINEL,
+  setCaretOffset,
+} from "./editorDom";
 import { SocketClient } from "./socketClient";
 import type { Peer, ServerMsg } from "./types";
 
@@ -16,7 +22,8 @@ class CollaborationController {
 
   constructor() {
     this.socket = new SocketClient({
-      onConnectionChange: (connection) => useCollaborationStore.getState().setConnection(connection),
+      onConnectionChange: (connection) =>
+        useCollaborationStore.getState().setConnection(connection),
       onMessage: (message) => this.receive(message),
       onClose: () => this.scheduleReconnect(),
     });
@@ -100,7 +107,9 @@ class CollaborationController {
       this.editor.contains(selection.getRangeAt(0).endContainer);
 
     const ops = useCollaborationStore.getState().takePendingOps();
-    useCollaborationStore.getState().setCountdownMs(useCollaborationStore.getState().syncIntervalMs);
+    useCollaborationStore
+      .getState()
+      .setCountdownMs(useCollaborationStore.getState().syncIntervalMs);
     if (ops.length === 0) return;
 
     this.socket.send({

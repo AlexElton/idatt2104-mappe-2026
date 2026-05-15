@@ -58,18 +58,18 @@ Once this compiles and is pushed, all three are unblocked.
 
 ### Week 1 (days 2–6): implement and unit test in isolation
 
-| File | What to implement |
-|------|------------------|
+| File          | What to implement                                                                                         |
+| ------------- | --------------------------------------------------------------------------------------------------------- |
 | `s4vector.rs` | `S4Vector::precedes(&self, other) -> bool` (Definition 9 from paper), `S4Vector::new(ssn, sid, sum, seq)` |
-| `node.rs` | `struct Node { obj, s_k, s_p, link (index), next (index) }`, tombstone detection |
-| `rga.rs` | `struct RGA { nodes: Vec<Node>, hash: HashMap<S4Vector, usize>, head: Option<usize> }` |
-| | `local_insert(pos: usize, obj: char) -> Op` |
-| | `local_delete(pos: usize) -> Op` |
-| | `local_update(pos: usize, obj: char) -> Op` |
-| | `remote_insert(op)` — Algorithm 8 from paper |
-| | `remote_delete(op)` — Algorithm 9 |
-| | `remote_update(op)` — Algorithm 10 |
-| | `to_string() -> String` — walk linked list, skip tombstones |
+| `node.rs`     | `struct Node { obj, s_k, s_p, link (index), next (index) }`, tombstone detection                          |
+| `rga.rs`      | `struct RGA { nodes: Vec<Node>, hash: HashMap<S4Vector, usize>, head: Option<usize> }`                    |
+|               | `local_insert(pos: usize, obj: char) -> Op`                                                               |
+|               | `local_delete(pos: usize) -> Op`                                                                          |
+|               | `local_update(pos: usize, obj: char) -> Op`                                                               |
+|               | `remote_insert(op)` — Algorithm 8 from paper                                                              |
+|               | `remote_delete(op)` — Algorithm 9                                                                         |
+|               | `remote_update(op)` — Algorithm 10                                                                        |
+|               | `to_string() -> String` — walk linked list, skip tombstones                                               |
 
 ### Tests to write (use Claude for boilerplate, write assertions yourself)
 
@@ -79,6 +79,7 @@ Once this compiles and is pushed, all three are unblocked.
 - `test_update_loses_to_delete`
 
 ### Week 2 (days 7–8)
+
 Tombstone purging (Section 5.6 of paper), then help S3 debug integration failures.
 
 ---
@@ -100,6 +101,7 @@ futures-util = "0.3"
 ### Week 1 (days 2–6)
 
 **`registry.rs`**
+
 ```rust
 struct Registry {
     clients: Arc<RwLock<HashMap<u64, mpsc::Sender<Message>>>>
@@ -110,6 +112,7 @@ fn disconnect(site_id)
 ```
 
 **`handler.rs`**
+
 - `GET /` → serve `static/index.html`
 - `GET /ws` → WebSocket upgrade
 - On connect: assign `site_id`, send it to client, register in Registry
@@ -117,9 +120,11 @@ fn disconnect(site_id)
 - On disconnect: remove from Registry
 
 ### Days 4–5 target
+
 Get two `wscat` connections exchanging mock ops. RGA does not need to be working yet.
 
 ### Week 2 (days 7–8)
+
 Integrate S1's RGA (server keeps its own RGA instance), help debug race conditions.
 
 ---
@@ -148,15 +153,19 @@ async fn test_two_clients_converge() {
 ```
 
 ### Days 5–6
+
 `main.rs` — wire server, start listening, handle Ctrl-C gracefully.
 
 ### Days 7–8
+
 Run convergence tests against real server + RGA. Find and report bugs to S1/S2.
 
 ### Days 9–10
+
 README (required sections listed below) + frontend with Claude.
 
 ### Days 11–12
+
 Presentation prep, final polish.
 
 ---
@@ -164,6 +173,7 @@ Presentation prep, final polish.
 ## Frontend — Claude task, Day 9 (half a day)
 
 Ask Claude to generate `static/index.html` with:
+
 - WebSocket connection to `ws://localhost:3000/ws`
 - `<textarea>` synced to received RGA state
 - Delay slider (0–3000ms) — buffers incoming ops with `setTimeout`
@@ -175,33 +185,33 @@ Review it, verify the op JSON matches your wire format, done.
 
 ## Timeline
 
-| Day | S1 | S2 | S3 |
-|-----|----|----|-----|
-| 1 | **Together:** repo setup, `op.rs`, Cargo.toml | | |
-| 2 | `s4vector.rs` + tests | `registry.rs` skeleton | test harness skeleton |
-| 3 | `node.rs` | `handler.rs`, HTTP serving | test harness: connect + send |
-| 4 | `rga.rs` local ops | WebSocket upgrade, broadcast | test harness: concurrent ops |
-| 5 | `rga.rs` remote insert | mock op round-trip working | convergence assertions |
-| 6 | remote delete + update, unit tests pass | server stable with two clients | `main.rs` wiring |
-| 7 | **Integration day** — plug RGA into server, first real test | | |
-| 8 | Fix bugs from convergence tests | | |
-| 9 | Tombstone purging | Polish | README draft + frontend |
-| 10 | | | Frontend done, README complete |
-| 11 | **Together:** demo run-through, edge case fixes | | |
-| 12 | **Submit** | | |
+| Day | S1                                                          | S2                             | S3                             |
+| --- | ----------------------------------------------------------- | ------------------------------ | ------------------------------ |
+| 1   | **Together:** repo setup, `op.rs`, Cargo.toml               |                                |                                |
+| 2   | `s4vector.rs` + tests                                       | `registry.rs` skeleton         | test harness skeleton          |
+| 3   | `node.rs`                                                   | `handler.rs`, HTTP serving     | test harness: connect + send   |
+| 4   | `rga.rs` local ops                                          | WebSocket upgrade, broadcast   | test harness: concurrent ops   |
+| 5   | `rga.rs` remote insert                                      | mock op round-trip working     | convergence assertions         |
+| 6   | remote delete + update, unit tests pass                     | server stable with two clients | `main.rs` wiring               |
+| 7   | **Integration day** — plug RGA into server, first real test |                                |                                |
+| 8   | Fix bugs from convergence tests                             |                                |                                |
+| 9   | Tombstone purging                                           | Polish                         | README draft + frontend        |
+| 10  |                                                             |                                | Frontend done, README complete |
+| 11  | **Together:** demo run-through, edge case fixes             |                                |                                |
+| 12  | **Submit**                                                  |                                |                                |
 
 ---
 
 ## Where to use Claude Max vs write yourself
 
-| Use Claude for | Write yourself |
-|---|---|
-| Cargo.toml dependency versions | RGA algorithms (Algorithms 8–10 from paper) |
-| Tokio/axum boilerplate | `S4Vector::precedes()` ordering logic |
-| Test boilerplate (`#[tokio::test]`, setup/teardown) | Convergence test assertions |
-| serde derives and JSON shapes | The remote Insert scanning loop |
-| Frontend HTML/JS entirely | README content — you know the system |
-| README formatting and structure | README "future work" — you understand the tradeoffs |
+| Use Claude for                                      | Write yourself                                      |
+| --------------------------------------------------- | --------------------------------------------------- |
+| Cargo.toml dependency versions                      | RGA algorithms (Algorithms 8–10 from paper)         |
+| Tokio/axum boilerplate                              | `S4Vector::precedes()` ordering logic               |
+| Test boilerplate (`#[tokio::test]`, setup/teardown) | Convergence test assertions                         |
+| serde derives and JSON shapes                       | The remote Insert scanning loop                     |
+| Frontend HTML/JS entirely                           | README content — you know the system                |
+| README formatting and structure                     | README "future work" — you understand the tradeoffs |
 
 **Rule of thumb:** use Claude for anything you would copy-paste from docs anyway. Write yourself anything that touches the algorithm.
 

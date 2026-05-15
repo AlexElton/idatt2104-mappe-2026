@@ -1,7 +1,10 @@
 {
   "name": "rga-core",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
+  "files": [
+    "pkg"
+  ],
   "type": "module",
   "module": "./pkg/rga_core.js",
   "types": "./pkg/rga_core.d.ts",
@@ -11,9 +14,6 @@
       "default": "./pkg/rga_core.js"
     }
   },
-  "files": [
-    "pkg"
-  ],
   "scripts": {
     "build": "wasm-pack build --target bundler --release .",
     "build-dev": "wasm-pack build --target bundler --dev ."

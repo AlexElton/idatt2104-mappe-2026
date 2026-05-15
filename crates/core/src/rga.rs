@@ -136,19 +136,6 @@ impl Rga {
         }
     }
 
-    /// Walk the linked list and collect all non-tombstone characters in order.
-    pub fn to_string(&self) -> String {
-        let mut result = String::new();
-        let mut cur = self.head;
-        while let Some(idx) = cur {
-            if !self.nodes[idx].is_tombstone() {
-                result.push(self.nodes[idx].obj);
-            }
-            cur = self.nodes[idx].link;
-        }
-        result
-    }
-
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
@@ -262,6 +249,19 @@ impl Rga {
 
         // Remove from SVI hash table — Vec slot retained
         self.hash.remove(s_k);
+    }
+}
+
+impl std::fmt::Display for Rga {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut cur = self.head;
+        while let Some(idx) = cur {
+            if !self.nodes[idx].is_tombstone() {
+                write!(f, "{}", self.nodes[idx].obj)?;
+            }
+            cur = self.nodes[idx].link;
+        }
+        Ok(())
     }
 }
 

@@ -8,16 +8,21 @@
     "build:web": "nx run web:build",
     "build:backend": "nx run backend:build",
     "dev:web": "nx run web:dev",
-    "dev:backend": "nx run backend:dev"
+    "dev:backend": "nx run backend:dev",
+    "lint": "cargo clippy --workspace --all-targets -- -D warnings && oxlint .",
+    "format": "cargo fmt && oxfmt . --write",
+    "format:check": "cargo fmt --check && oxfmt . --check"
   },
   "devDependencies": {
-    "nx": "^22.7.2"
+    "nx": "^22.7.2",
+    "oxfmt": "^0.50.0",
+    "oxlint": "^1.65.0"
   },
+  "packageManager": "pnpm@10.33.0",
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
       "nx"
     ]
-  },
-  "packageManager": "pnpm@10.33.0"
+  }
 }

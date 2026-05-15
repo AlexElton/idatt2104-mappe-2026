@@ -96,7 +96,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     })
     .expect("serialize InitMsg");
 
-    if sink.send(WsMessage::Text(init_json.into())).await.is_err() {
+    if sink.send(WsMessage::Text(init_json)).await.is_err() {
         state.registry.disconnect(site_id).await;
         return;
     }
@@ -105,7 +105,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let mut send_task = tokio::spawn(async move {
         let mut rx: Rx = rx;
         while let Some(json) = rx.recv().await {
-            if sink.send(WsMessage::Text(json.into())).await.is_err() {
+            if sink.send(WsMessage::Text(json)).await.is_err() {
                 break;
             }
         }

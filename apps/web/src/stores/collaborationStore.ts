@@ -37,7 +37,8 @@ export const useCollaborationStore = create<CollaborationState>((set, get) => ({
   setConnection: (connection) => set({ connection }),
   setSyncIntervalMs: (syncIntervalMs) => set({ syncIntervalMs, countdownMs: syncIntervalMs }),
   setCountdownMs: (countdownMs) => set({ countdownMs }),
-  tickCountdown: (deltaMs) => set((state) => ({ countdownMs: Math.max(0, state.countdownMs - deltaMs) })),
+  tickCountdown: (deltaMs) =>
+    set((state) => ({ countdownMs: Math.max(0, state.countdownMs - deltaMs) })),
   receiveInit: (msg) =>
     set((state) => ({
       siteId: msg.site_id,

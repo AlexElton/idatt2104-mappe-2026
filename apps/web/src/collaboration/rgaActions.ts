@@ -6,7 +6,11 @@ export function computeOps(oldText: string, newText: string): ClientOp[] {
   const ops: ClientOp[] = [];
   let prefix = 0;
 
-  while (prefix < oldText.length && prefix < newText.length && oldText[prefix] === newText[prefix]) {
+  while (
+    prefix < oldText.length &&
+    prefix < newText.length &&
+    oldText[prefix] === newText[prefix]
+  ) {
     prefix++;
   }
 

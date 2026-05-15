@@ -7,15 +7,12 @@ export function EditorPane() {
     collaborationController.attachEditor(editor);
   }, []);
 
-  const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== "Enter") return;
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter") return;
 
-      event.preventDefault();
-      insertManagedNewline(event.currentTarget);
-    },
-    [],
-  );
+    event.preventDefault();
+    insertManagedNewline(event.currentTarget);
+  }, []);
 
   return (
     <div
