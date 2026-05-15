@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
-use crate::crdt::{node::Node, op::Op, s4vector::S4Vector};
+use crate::{node::Node, op::Op, s4vector::S4Vector};
 
 /// Replicated Growable Array (Roh et al. 2011).
 ///
 /// Internally a linked list (via indices into `nodes`) combined with
 /// a hash table keyed by s4vector (the SVI scheme, Section 5.4).
 pub struct Rga {
-    nodes:   Vec<Node>,
-    hash:    HashMap<S4Vector, usize>, // SVI: s_k → index in `nodes`
-    head:    Option<usize>,            // index of first node in linked list
+    nodes: Vec<Node>,
+    hash: HashMap<S4Vector, usize>, // SVI: s_k → index in `nodes`
+    head: Option<usize>,            // index of first node in linked list
     site_id: u64,
     session: u64,
     counter: u64, // monotonically increasing; used as a simplified vector clock
@@ -37,7 +37,11 @@ impl Rga {
         let left_s4v = self.findlist(pos).map(|idx| self.nodes[idx].s_k.clone());
         let s_k = self.next_s4vector();
         self.remote_insert(left_s4v.clone(), obj, s_k.clone());
-        Some(Op::Insert { left: left_s4v, obj, s_k })
+        Some(Op::Insert {
+            left: left_s4v,
+            obj,
+            s_k,
+        })
     }
 
     /// Delete the visible character at 0-indexed position pos (pos=0 = first char).
@@ -76,7 +80,7 @@ impl Rga {
 
         let mut prev = left_idx;
         let mut cur = match left_idx {
-            None      => self.head,
+            None => self.head,
             Some(idx) => self.nodes[idx].link,
         };
 
@@ -87,12 +91,12 @@ impl Rga {
                 break; // c.s_k lower priority → insert before c
             }
             prev = Some(c);
-            cur  = self.nodes[c].link;
+            cur = self.nodes[c].link;
         }
 
         self.nodes[new_idx].link = cur;
         match prev {
-            None    => self.head = Some(new_idx),
+            None => self.head = Some(new_idx),
             Some(p) => self.nodes[p].link = Some(new_idx),
         }
     }
@@ -126,9 +130,9 @@ impl Rga {
     /// Dispatch a remote Op to the correct algorithm.
     pub fn apply(&mut self, op: Op) {
         match op {
-            Op::Insert { left, obj, s_k }    => self.remote_insert(left, obj, s_k),
-            Op::Delete { target, s_k }        => self.remote_delete(target, s_k),
-            Op::Update { target, obj, s_k }   => self.remote_update(target, obj, s_k),
+            Op::Insert { left, obj, s_k } => self.remote_insert(left, obj, s_k),
+            Op::Delete { target, s_k } => self.remote_delete(target, s_k),
+            Op::Update { target, obj, s_k } => self.remote_update(target, obj, s_k),
         }
     }
 
@@ -191,17 +195,17 @@ impl Rga {
             let node = &self.nodes[idx];
             ops.push(Op::Insert {
                 left: prev.clone(),
-                obj:  node.obj,
-                s_k:  node.s_k.clone(),
+                obj: node.obj,
+                s_k: node.s_k.clone(),
             });
             if node.tombstone {
                 ops.push(Op::Delete {
                     target: node.s_k.clone(),
-                    s_k:    node.s_p.clone(),
+                    s_k: node.s_p.clone(),
                 });
             }
             prev = Some(node.s_k.clone());
-            cur  = node.link;
+            cur = node.link;
         }
         ops
     }
@@ -223,7 +227,8 @@ impl Rga {
     /// Returns true iff the node identified by `s_k` exists and is tombstoned.
     /// Returns false if the node does not exist (not yet received = not safe to GC).
     pub fn is_tombstoned(&self, s_k: &S4Vector) -> bool {
-        self.hash.get(s_k)
+        self.hash
+            .get(s_k)
             .map(|&idx| self.nodes[idx].tombstone)
             .unwrap_or(false)
     }
@@ -236,7 +241,9 @@ impl Rga {
     /// Caller must ensure the node is tombstoned before calling. Calling gc_node on a
     /// live node would make it permanently invisible without marking it deleted — logic error / silent data loss.
     pub fn gc_node(&mut self, s_k: &S4Vector) {
-        let Some(&idx) = self.hash.get(s_k) else { return };
+        let Some(&idx) = self.hash.get(s_k) else {
+            return;
+        };
         let next_link = self.nodes[idx].link;
 
         // Splice out of linked list

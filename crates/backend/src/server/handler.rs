@@ -1,19 +1,19 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
 use axum::{
+    Router,
     extract::{
-        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         State,
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -31,10 +31,10 @@ struct ClientOpsMsg {
 
 #[derive(Debug, Deserialize)]
 struct ClientOpJson {
-    op:  String,
+    op: String,
     pos: usize,
     #[serde(rename = "char")]
-    ch:  Option<char>,
+    ch: Option<char>,
 }
 
 /// Server → client: sent once on connect.
@@ -42,22 +42,22 @@ struct ClientOpJson {
 struct InitMsg<'a> {
     #[serde(rename = "type")]
     msg_type: &'static str,
-    site_id:  u64,
-    text:     &'a str,
-    cursors:  HashMap<u64, usize>,
+    site_id: u64,
+    text: &'a str,
+    cursors: HashMap<u64, usize>,
 }
 
 /// Shared server state — cheap to clone (Arc inside Registry).
 #[derive(Clone)]
 pub struct AppState {
-    pub registry:     Registry,
+    pub registry: Registry,
     pub next_site_id: Arc<AtomicU64>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
-            registry:     Registry::new(),
+            registry: Registry::new(),
             next_site_id: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -130,14 +130,21 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             };
 
             if parsed.msg_type != "ops" {
-                eprintln!("[WARN] unknown msg type '{}' from site {}", parsed.msg_type, site_id);
+                eprintln!(
+                    "[WARN] unknown msg type '{}' from site {}",
+                    parsed.msg_type, site_id
+                );
                 continue;
             }
 
             let ops: Vec<ClientOp> = parsed
                 .ops
                 .into_iter()
-                .map(|o| ClientOp { op: o.op, pos: o.pos, ch: o.ch })
+                .map(|o| ClientOp {
+                    op: o.op,
+                    pos: o.pos,
+                    ch: o.ch,
+                })
                 .collect();
 
             registry.process_sync(site_id, ops, parsed.cursor).await;

@@ -1,4 +1,4 @@
-use crate::crdt::s4vector::S4Vector;
+use crate::s4vector::S4Vector;
 
 /// A single node in the RGA linked list.
 ///
@@ -10,12 +10,13 @@ use crate::crdt::s4vector::S4Vector;
 /// `next`      — index of next node in SVI hash chain (separate chaining, unused for now).
 #[derive(Debug, Clone)]
 pub struct Node {
-    pub obj:       char,
+    pub obj: char,
     pub tombstone: bool,
-    pub s_k:       S4Vector,
-    pub s_p:       S4Vector,
-    pub link:      Option<usize>,
-    pub next:      Option<usize>,
+    pub s_k: S4Vector,
+    pub s_p: S4Vector,
+    pub link: Option<usize>,
+    #[allow(dead_code)]
+    pub next: Option<usize>,
 }
 
 impl Node {

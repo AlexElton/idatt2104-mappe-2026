@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::crdt::s4vector::S4Vector;
+use crate::s4vector::S4Vector;
 
 /// An operation that can be applied to an RGA.
 /// These are broadcast over WebSocket to remote sites.
@@ -30,12 +30,4 @@ pub enum Op {
         obj: char,
         s_k: S4Vector,
     },
-}
-
-/// WebSocket wire envelope — wraps an Op with the originating site's ID.
-/// The server stamps `site_id` before broadcasting so clients know the source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub site_id: u64,
-    pub op: Op,
 }

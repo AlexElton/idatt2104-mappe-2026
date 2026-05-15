@@ -1,20 +1,8 @@
-use serde::{Deserialize, Serialize};
+mod node;
+pub mod op;
+pub mod rga;
+pub mod s4vector;
 
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Greeting {
-    pub message: String,
-}
-
-pub fn build_greeting(name: &str) -> Greeting {
-    Greeting {
-        message: format!("Hello, {name}!"),
-    }
-}
-
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn greet(name: &str) -> String {
-    build_greeting(name).message
-}
+pub use op::Op;
+pub use rga::Rga;
+pub use s4vector::S4Vector;

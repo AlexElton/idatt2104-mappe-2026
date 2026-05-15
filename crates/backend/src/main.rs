@@ -1,7 +1,7 @@
 mod crdt;
 mod server;
 
-use server::handler::{router, AppState};
+use server::handler::{AppState, router};
 
 #[tokio::main]
 async fn main() {

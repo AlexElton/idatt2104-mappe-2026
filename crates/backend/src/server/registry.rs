@@ -1,24 +1,24 @@
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc, RwLock};
+use rga_core::{Op, Rga};
 use serde::Serialize;
-use crate::crdt::{Rga, Op};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::{RwLock, mpsc};
 
 pub type Rx = mpsc::UnboundedReceiver<String>;
-type Tx  = mpsc::UnboundedSender<String>;
+type Tx = mpsc::UnboundedSender<String>;
 
 /// A position-based op from the client — no S4Vectors needed in the browser.
 #[derive(Debug)]
 pub struct ClientOp {
-    pub op:  String,       // "insert", "delete", or "update"
-    pub pos: usize,        // 0-indexed visible-character position
-    pub ch:  Option<char>, // present for insert/update, absent for delete
+    pub op: String,       // "insert", "delete", or "update"
+    pub pos: usize,       // 0-indexed visible-character position
+    pub ch: Option<char>, // present for insert/update, absent for delete
 }
 
 struct ClientInfo {
-    tx:          Tx,
-    rga:         Rga,
-    pending_ops: Vec<Op>,       // remote ops queued until this client's next sync
-    cursor_pos:  Option<usize>, // LWW register: last reported caret position
+    tx: Tx,
+    rga: Rga,
+    pending_ops: Vec<Op>,      // remote ops queued until this client's next sync
+    cursor_pos: Option<usize>, // LWW register: last reported caret position
 }
 
 /// Server → client: broadcast after every sync.
@@ -26,9 +26,9 @@ struct ClientInfo {
 struct StateMsg<'a> {
     #[serde(rename = "type")]
     msg_type: &'static str,
-    text:     &'a str,
-    clients:  usize,
-    cursors:  HashMap<u64, usize>,
+    text: &'a str,
+    clients: usize,
+    cursors: HashMap<u64, usize>,
 }
 
 #[derive(Clone, Default)]
@@ -58,18 +58,26 @@ impl Registry {
         }
         let current_text = new_rga.to_string();
 
-        clients.insert(site_id, ClientInfo {
-            tx,
-            rga: new_rga,
-            pending_ops: Vec::new(),
-            cursor_pos:  None,
-        });
+        clients.insert(
+            site_id,
+            ClientInfo {
+                tx,
+                rga: new_rga,
+                pending_ops: Vec::new(),
+                cursor_pos: None,
+            },
+        );
 
-        let cursors: HashMap<u64, usize> = clients.iter()
+        let cursors: HashMap<u64, usize> = clients
+            .iter()
             .filter_map(|(sid, c)| c.cursor_pos.map(|pos| (*sid, pos)))
             .collect();
 
-        println!("[INFO] site {} connected ({} clients)", site_id, clients.len());
+        println!(
+            "[INFO] site {} connected ({} clients)",
+            site_id,
+            clients.len()
+        );
         (rx, current_text, cursors)
     }
 
@@ -77,7 +85,11 @@ impl Registry {
     pub async fn disconnect(&self, site_id: u64) {
         let mut clients = self.inner.write().await;
         clients.remove(&site_id);
-        println!("[INFO] site {} disconnected ({} clients)", site_id, clients.len());
+        println!(
+            "[INFO] site {} disconnected ({} clients)",
+            site_id,
+            clients.len()
+        );
     }
 
     /// Core CRDT sync algorithm (spec §4).
@@ -152,8 +164,8 @@ impl Registry {
             .collect();
         let json = serde_json::to_string(&StateMsg {
             msg_type: "state",
-            text:     &canonical,
-            clients:  count,
+            text: &canonical,
+            clients: count,
             cursors,
         })
         .expect("serialize StateMsg");
@@ -179,9 +191,10 @@ impl Registry {
             let safe = site_ids.iter().all(|sid| {
                 let c = &clients[sid];
                 c.rga.is_tombstoned(&s_k)
-                    && !c.pending_ops.iter().any(|op| {
-                        matches!(op, Op::Insert { left: Some(l), .. } if l == &s_k)
-                    })
+                    && !c
+                        .pending_ops
+                        .iter()
+                        .any(|op| matches!(op, Op::Insert { left: Some(l), .. } if l == &s_k))
             });
             if safe {
                 for sid in &site_ids {
@@ -206,10 +219,8 @@ mod tests {
         registry.process_sync(1, vec![], Some(5)).await;
         registry.process_sync(1, vec![], Some(10)).await;
 
-        let msg1: serde_json::Value =
-            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-        let msg2: serde_json::Value =
-            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let msg1: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let msg2: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
 
         assert_eq!(msg1["cursors"]["1"], 5);
         assert_eq!(msg2["cursors"]["1"], 10);
@@ -224,10 +235,8 @@ mod tests {
         registry.process_sync(1, vec![], Some(7)).await;
         registry.process_sync(1, vec![], None).await;
 
-        let _: serde_json::Value =
-            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-        let msg2: serde_json::Value =
-            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let _: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let msg2: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
 
         assert_eq!(msg2["cursors"]["1"], 7);
     }
@@ -241,10 +250,8 @@ mod tests {
         registry.process_sync(1, vec![], Some(3)).await;
         registry.process_sync(2, vec![], Some(8)).await;
 
-        let _: serde_json::Value =
-            serde_json::from_str(&rx1.try_recv().unwrap()).unwrap();
-        let msg2: serde_json::Value =
-            serde_json::from_str(&rx1.try_recv().unwrap()).unwrap();
+        let _: serde_json::Value = serde_json::from_str(&rx1.try_recv().unwrap()).unwrap();
+        let msg2: serde_json::Value = serde_json::from_str(&rx1.try_recv().unwrap()).unwrap();
 
         assert_eq!(msg2["cursors"]["1"], 3);
         assert_eq!(msg2["cursors"]["2"], 8);
@@ -257,14 +264,12 @@ mod tests {
         let (mut rx2, _, _) = registry.connect(2).await;
 
         registry.process_sync(1, vec![], Some(5)).await;
-        let _: serde_json::Value =
-            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let _: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
 
         registry.disconnect(1).await;
         registry.process_sync(2, vec![], Some(2)).await;
 
-        let msg: serde_json::Value =
-            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let msg: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
 
         assert!(
             msg["cursors"].get("1").is_none(),
@@ -304,8 +309,7 @@ mod tests {
             .collect();
         registry.process_sync(2, what_after_hello, None).await;
 
-        let merged: serde_json::Value =
-            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        let merged: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
         assert_eq!(merged["text"], "HelloWhat World");
     }
 }
