@@ -1,9 +1,10 @@
 [package]
-name = "idatt2104-mappe-2026"
+name = "backend"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rga-core = { path = "../core" }
 tokio       = { version = "1", features = ["full"] }
 axum        = { version = "0.7", features = ["ws"] }
 serde       = { version = "1", features = ["derive"] }
