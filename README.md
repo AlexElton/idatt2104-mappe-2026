@@ -31,6 +31,18 @@ Together these guarantee **eventual consistency** — after all pending ops are 
 - **Single-server only** — the server is the communication hub. True peer-to-peer distribution is not supported.
 - **No undo/redo** — explicitly out of scope for this assignment.
 
+## Project Layout
+
+This repository is now a Cargo + pnpm monorepo:
+
+| Path | Purpose |
+|---|---|
+| `crates/backend` | Axum WebSocket/API server |
+| `crates/core` | Shared Rust crate compiled natively and to WebAssembly |
+| `apps/web` | React + Vite collaborative editor SPA |
+
+The backend serves the API and WebSocket endpoint. During development, Vite serves the SPA and proxies `/api` and `/ws` to the backend.
+
 ## External Dependencies
 
 | Crate | Version | Purpose |
@@ -45,21 +57,31 @@ No external CRDT libraries are used. All RGA logic is hand-implemented from Roh 
 
 ## Installation
 
-Requires Rust (stable, 2024 edition). Install via [rustup](https://rustup.rs/).
+Requires Rust (stable, 2024 edition), pnpm, and wasm-pack. Install Rust via [rustup](https://rustup.rs/).
 
 ```bash
 git clone https://github.com/AlexElton/idatt2104-mappe-2026.git
 cd idatt2104-mappe-2026
-cargo build --release
+cargo install wasm-pack
+pnpm bootstrap:wasm
+pnpm install
 ```
 
 ## Usage
 
+Start the backend in one terminal:
+
 ```bash
-cargo run --release
+pnpm dev:backend
 ```
 
-Open `http://localhost:3000` in two or more browser tabs.
+Start the React/Vite frontend in another terminal:
+
+```bash
+pnpm dev:web
+```
+
+Open the Vite URL printed by `pnpm dev:web` in two or more browser tabs.
 
 **Demonstrating convergence with a simulated network partition:**
 1. Open two tabs.
@@ -86,6 +108,15 @@ Unit tests are in `src/crdt/rga.rs` (module `tests`). They verify:
 ```bash
 cargo doc --open
 ```
+
+## Production Builds
+
+```bash
+pnpm build:web
+pnpm build:backend
+```
+
+`pnpm build:web` rebuilds the WebAssembly package and writes the SPA bundle to `apps/web/dist/`. `pnpm build:backend` builds the release backend binary.
 
 ## Attribution
 
