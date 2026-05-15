@@ -261,7 +261,7 @@
 
             if (msg.type === 'init') {
                 siteId = msg.site_id;
-                applyState(msg.text, {});
+                applyState(msg.text, msg.cursors || {});
                 connStatus.textContent = '🟢 Connected · Site #' + siteId;
                 return;
             }
