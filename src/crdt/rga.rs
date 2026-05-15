@@ -220,6 +220,35 @@ impl Rga {
             .map(|&idx| self.nodes[idx].tombstone)
             .unwrap_or(false)
     }
+
+    /// Remove a tombstoned node from the linked list and hash table (Section 5.6).
+    /// The Vec slot at the node's index is retained — no index shifting occurs.
+    /// After this call: tombstoned_keys() excludes this node, is_tombstoned() returns false,
+    /// hydration_ops() and to_string() naturally skip it (they traverse via head→link).
+    ///
+    /// Caller must ensure the node is tombstoned before calling. Calling gc_node on a
+    /// live node would make it permanently invisible without marking it deleted — undefined behavior.
+    pub fn gc_node(&mut self, s_k: &S4Vector) {
+        let Some(&idx) = self.hash.get(s_k) else { return };
+        let next_link = self.nodes[idx].link;
+
+        // Splice out of linked list
+        if self.head == Some(idx) {
+            self.head = next_link;
+        } else {
+            let mut cur = self.head;
+            while let Some(ci) = cur {
+                if self.nodes[ci].link == Some(idx) {
+                    self.nodes[ci].link = next_link;
+                    break;
+                }
+                cur = self.nodes[ci].link;
+            }
+        }
+
+        // Remove from SVI hash table — Vec slot retained
+        self.hash.remove(s_k);
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -433,5 +462,92 @@ mod tests {
         rga.remote_insert(None, 'a', s_a.clone());
         rga.remote_delete(s_a.clone(), s4v(0, 1, 2));
         assert!(rga.is_tombstoned(&s_a));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tombstone GC tests (Task 2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gc_node_removed_from_tombstoned_keys() {
+        let s_a = s4v(0, 1, 1);
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s_a.clone());
+        rga.remote_delete(s_a.clone(), s4v(0, 1, 2));
+        assert_eq!(rga.tombstoned_keys().len(), 1);
+
+        rga.gc_node(&s_a);
+
+        assert!(rga.tombstoned_keys().is_empty());
+        assert!(!rga.is_tombstoned(&s_a));
+    }
+
+    #[test]
+    fn test_gc_node_to_string_unchanged() {
+        let s_a = s4v(0, 1, 1);
+        let s_b = s4v(0, 1, 2);
+        let s_c = s4v(0, 1, 3);
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s_a.clone());
+        rga.remote_insert(Some(s_a.clone()), 'b', s_b.clone());
+        rga.remote_insert(Some(s_b.clone()), 'c', s_c.clone());
+        rga.remote_delete(s_b.clone(), s4v(0, 1, 4));
+        assert_eq!(rga.to_string(), "ac");
+
+        rga.gc_node(&s_b);
+
+        assert_eq!(rga.to_string(), "ac");
+    }
+
+    #[test]
+    fn test_gc_node_middle_keeps_neighbors_linked() {
+        let s_a = s4v(0, 1, 1);
+        let s_b = s4v(0, 1, 2);
+        let s_c = s4v(0, 1, 3);
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s_a.clone());
+        rga.remote_insert(Some(s_a.clone()), 'b', s_b.clone());
+        rga.remote_insert(Some(s_b.clone()), 'c', s_c.clone());
+        rga.remote_delete(s_b.clone(), s4v(0, 1, 4));
+
+        rga.gc_node(&s_b);
+
+        assert_eq!(rga.to_string(), "ac");
+        rga.remote_insert(Some(s_a.clone()), 'x', s4v(0, 1, 5));
+        assert_eq!(rga.to_string(), "axc");
+    }
+
+    #[test]
+    fn test_gc_node_head_updates_head_pointer() {
+        let s_a = s4v(0, 1, 1);
+        let s_b = s4v(0, 1, 2);
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s_a.clone());
+        rga.remote_insert(Some(s_a.clone()), 'b', s_b.clone());
+        rga.remote_delete(s_a.clone(), s4v(0, 1, 3));
+
+        rga.gc_node(&s_a);
+
+        assert_eq!(rga.to_string(), "b");
+    }
+
+    #[test]
+    fn test_gc_node_absent_from_hydration() {
+        let s_a = s4v(0, 1, 1);
+        let s_b = s4v(0, 1, 2);
+        let mut rga = Rga::new(1, 0);
+        rga.remote_insert(None, 'a', s_a.clone());
+        rga.remote_insert(Some(s_a.clone()), 'b', s_b.clone());
+        rga.remote_delete(s_b.clone(), s4v(0, 1, 3));
+
+        rga.gc_node(&s_b);
+
+        let ops = rga.hydration_ops();
+        let references_b = ops.iter().any(|op| match op {
+            Op::Insert { s_k, .. } => s_k == &s_b,
+            Op::Delete { target, .. } => target == &s_b,
+            Op::Update { target, .. } => target == &s_b,
+        });
+        assert!(!references_b, "GC'd node must not appear in hydration_ops");
     }
 }
