@@ -4,6 +4,9 @@ import wasm from "vite-plugin-wasm";
 import { wasmHmr } from "vite-plugin-wasm-hmr";
 
 export default defineConfig({
+  build: {
+    target: "esnext",
+  },
   plugins: [
     react(),
     wasm(),
