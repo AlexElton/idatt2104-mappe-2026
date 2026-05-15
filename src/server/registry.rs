@@ -142,5 +142,21 @@ impl Registry {
                 // Recipient will be cleaned up when their WS task notices the disconnect
             }
         }
+
+        // Step 5 — GC pass: prune tombstones acknowledged by all connected clients.
+        // A tombstone is safe to remove when every client RGA has it marked tombstoned
+        // (i.e., no client's pending_ops can still reference it as a left cobject).
+        // Runs inside the write lock — no extra synchronisation needed.
+        // Reference: Section 5.6, Roh et al. 2011.
+        let site_ids: Vec<u64> = clients.keys().copied().collect();
+        let candidates = clients[&from_site].rga.tombstoned_keys();
+        for s_k in candidates {
+            if site_ids.iter().all(|sid| clients[sid].rga.is_tombstoned(&s_k)) {
+                for sid in &site_ids {
+                    clients.get_mut(sid).unwrap().rga.gc_node(&s_k);
+                }
+                println!("[INFO] [GC] pruned tombstone {}", s_k);
+            }
+        }
     }
 }
