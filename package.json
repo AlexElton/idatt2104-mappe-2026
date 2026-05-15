@@ -1,0 +1,13 @@
+{
+  "name": "nettverk",
+  "private": true,
+  "scripts": {
+    "bootstrap:wasm": "wasm-pack build --target bundler --dev crates/core",
+    "build:wasm": "wasm-pack build --target bundler --release crates/core",
+    "build:web": "pnpm build:wasm && pnpm --filter web build",
+    "build:backend": "cargo build --release -p backend",
+    "dev:web": "pnpm --filter web dev",
+    "dev:backend": "cargo run -p backend"
+  },
+  "packageManager": "pnpm@10.33.0"
+}
