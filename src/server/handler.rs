@@ -1,6 +1,9 @@
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use axum::{
@@ -41,6 +44,7 @@ struct InitMsg<'a> {
     msg_type: &'static str,
     site_id:  u64,
     text:     &'a str,
+    cursors:  HashMap<u64, usize>,
 }
 
 /// Shared server state — cheap to clone (Arc inside Registry).
@@ -80,7 +84,7 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let site_id = state.assign_site_id();
-    let (rx, current_text) = state.registry.connect(site_id).await;
+    let (rx, current_text, init_cursors) = state.registry.connect(site_id).await;
     let (mut sink, mut stream) = socket.split();
 
     // Send init message immediately
@@ -88,6 +92,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         msg_type: "init",
         site_id,
         text: &current_text,
+        cursors: init_cursors,
     })
     .expect("serialize InitMsg");
 

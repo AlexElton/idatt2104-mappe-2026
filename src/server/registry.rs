@@ -41,10 +41,11 @@ impl Registry {
         Self::default()
     }
 
-    /// Register a new client. Returns (rx channel, current canonical text for init msg).
+    /// Register a new client. Returns (rx channel, current canonical text for init msg,
+    /// and the current cursor positions of all already-connected clients).
     /// Hydrates the new client's RGA by replaying existing document ops (see hydration_ops),
     /// so late joiners can delete and update pre-existing content correctly.
-    pub async fn connect(&self, site_id: u64) -> (Rx, String) {
+    pub async fn connect(&self, site_id: u64) -> (Rx, String, HashMap<u64, usize>) {
         let mut clients = self.inner.write().await;
         let (tx, rx) = mpsc::unbounded_channel::<String>();
 
@@ -64,8 +65,12 @@ impl Registry {
             cursor_pos:  None,
         });
 
+        let cursors: HashMap<u64, usize> = clients.iter()
+            .filter_map(|(sid, c)| c.cursor_pos.map(|pos| (*sid, pos)))
+            .collect();
+
         println!("[INFO] site {} connected ({} clients)", site_id, clients.len());
-        (rx, current_text)
+        (rx, current_text, cursors)
     }
 
     /// Remove a disconnected client.
@@ -193,8 +198,8 @@ mod tests {
     #[tokio::test]
     async fn test_cursor_lww_overwrite() {
         let registry = Registry::new();
-        let (mut _rx1, _) = registry.connect(1).await;
-        let (mut rx2, _) = registry.connect(2).await;
+        let (mut _rx1, _, _) = registry.connect(1).await;
+        let (mut rx2, _, _) = registry.connect(2).await;
 
         registry.process_sync(1, vec![], Some(5)).await;
         registry.process_sync(1, vec![], Some(10)).await;
@@ -211,8 +216,8 @@ mod tests {
     #[tokio::test]
     async fn test_cursor_none_preserves_previous() {
         let registry = Registry::new();
-        let (mut _rx1, _) = registry.connect(1).await;
-        let (mut rx2, _) = registry.connect(2).await;
+        let (mut _rx1, _, _) = registry.connect(1).await;
+        let (mut rx2, _, _) = registry.connect(2).await;
 
         registry.process_sync(1, vec![], Some(7)).await;
         registry.process_sync(1, vec![], None).await;
@@ -228,8 +233,8 @@ mod tests {
     #[tokio::test]
     async fn test_cursor_broadcast_includes_all_sites() {
         let registry = Registry::new();
-        let (mut rx1, _) = registry.connect(1).await;
-        let (mut _rx2, _) = registry.connect(2).await;
+        let (mut rx1, _, _) = registry.connect(1).await;
+        let (mut _rx2, _, _) = registry.connect(2).await;
 
         registry.process_sync(1, vec![], Some(3)).await;
         registry.process_sync(2, vec![], Some(8)).await;
@@ -246,8 +251,8 @@ mod tests {
     #[tokio::test]
     async fn test_cursor_cleared_on_disconnect() {
         let registry = Registry::new();
-        let (mut _rx1, _) = registry.connect(1).await;
-        let (mut rx2, _) = registry.connect(2).await;
+        let (mut _rx1, _, _) = registry.connect(1).await;
+        let (mut rx2, _, _) = registry.connect(2).await;
 
         registry.process_sync(1, vec![], Some(5)).await;
         let _: serde_json::Value =

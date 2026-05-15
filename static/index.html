@@ -138,7 +138,7 @@
                 if      (ch === '&')  html += '&amp;';
                 else if (ch === '<')  html += '&lt;';
                 else if (ch === '>')  html += '&gt;';
-                else if (ch === '\n') html += '<br>';
+                else if (ch === '\n') html += '&#10;';
                 else                  html += ch;
             }
         }
