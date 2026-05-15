@@ -1,0 +1,23 @@
+{
+  "name": "nettverk",
+  "private": true,
+  "scripts": {
+    "build": "nx run-many -t build --parallel=2",
+    "dev": "nx run rga-core:build-dev && nx run-many -t dev --parallel=2",
+    "build:wasm": "nx run rga-core:build",
+    "build:web": "nx run web:build",
+    "build:backend": "nx run backend:build",
+    "dev:web": "nx run web:dev",
+    "dev:backend": "nx run backend:dev"
+  },
+  "devDependencies": {
+    "nx": "^22.7.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "nx"
+    ]
+  },
+  "packageManager": "pnpm@10.33.0"
+}

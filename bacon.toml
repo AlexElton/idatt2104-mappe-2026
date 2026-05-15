@@ -1,0 +1,14 @@
+default_job = "backend"
+env.CARGO_TERM_COLOR = "always"
+
+[jobs.backend]
+command = ["cargo", "run", "-p", "backend"]
+need_stdout = true
+background = false
+allow_warnings = true
+on_change_strategy = "kill_then_restart"
+grace_period = "500ms"
+
+[jobs.check]
+command = ["cargo", "check", "--workspace", "--all-targets"]
+need_stdout = false

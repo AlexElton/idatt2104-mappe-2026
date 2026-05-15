@@ -1,0 +1,18 @@
+@layer theme, base, components, utilities;
+
+@import "tailwindcss";
+
+.editor:empty::before {
+  color: #787063;
+  content: "Start typing...";
+}
+
+.peer-cursor {
+  display: inline-block;
+  width: 0;
+  height: 1.1em;
+  margin: 0 -1px;
+  border-left: 2px solid currentColor;
+  pointer-events: none;
+  vertical-align: text-bottom;
+}
