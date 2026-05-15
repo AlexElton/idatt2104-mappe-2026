@@ -1,5 +1,13 @@
 # Rust build output
 /target
+target/
+crates/*/target/
+crates/core/pkg/
+
+# JavaScript build/dependency output
+node_modules/
+dist/
+apps/*/dist/
 
 # Rust backup files
 *.rs.bk
