@@ -227,7 +227,7 @@ impl Rga {
     /// hydration_ops() and to_string() naturally skip it (they traverse via head→link).
     ///
     /// Caller must ensure the node is tombstoned before calling. Calling gc_node on a
-    /// live node would make it permanently invisible without marking it deleted — undefined behavior.
+    /// live node would make it permanently invisible without marking it deleted — logic error / silent data loss.
     pub fn gc_node(&mut self, s_k: &S4Vector) {
         let Some(&idx) = self.hash.get(s_k) else { return };
         let next_link = self.nodes[idx].link;
