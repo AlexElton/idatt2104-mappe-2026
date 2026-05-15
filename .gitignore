@@ -8,6 +8,7 @@ crates/core/pkg/
 node_modules/
 dist/
 apps/*/dist/
+*.tsbuildinfo
 
 # Rust backup files
 *.rs.bk
