@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import wasm from "vite-plugin-wasm";
 import { wasmHmr } from "vite-plugin-wasm-hmr";
 
@@ -8,6 +9,7 @@ export default defineConfig({
     target: "esnext",
   },
   plugins: [
+    tailwindcss(),
     react(),
     wasm(),
     wasmHmr({

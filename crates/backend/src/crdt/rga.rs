@@ -67,6 +67,7 @@ impl Rga {
     /// Scan rightward, skipping nodes whose s_k has HIGHER priority than s_k,
     /// until we find one with lower priority — insert before it.
     pub fn remote_insert(&mut self, left: Option<S4Vector>, obj: char, s_k: S4Vector) {
+        self.observe_s4vector(&s_k);
         let new_idx = self.nodes.len();
         self.nodes.push(Node::new(obj, s_k.clone()));
         self.hash.insert(s_k.clone(), new_idx);
@@ -99,6 +100,7 @@ impl Rga {
     /// Algorithm 9 (Roh et al. 2011).
     /// Tombstone the node identified by `target`; record `s_o` as new s_p.
     pub fn remote_delete(&mut self, target: S4Vector, s_o: S4Vector) {
+        self.observe_s4vector(&s_o);
         if let Some(&idx) = self.hash.get(&target) {
             self.nodes[idx].tombstone = true;
             self.nodes[idx].s_p = s_o;
@@ -109,6 +111,7 @@ impl Rga {
     /// Replace obj if s_o has HIGHER priority than the node's current s_p.
     /// If the node is already tombstoned (Delete won), do nothing.
     pub fn remote_update(&mut self, target: S4Vector, obj: char, s_o: S4Vector) {
+        self.observe_s4vector(&s_o);
         if let Some(&idx) = self.hash.get(&target) {
             if self.nodes[idx].is_tombstone() {
                 return; // Delete wins over Update
@@ -151,6 +154,10 @@ impl Rga {
     fn next_s4vector(&mut self) -> S4Vector {
         self.counter += 1;
         S4Vector::new(self.session, self.site_id, self.counter, self.counter)
+    }
+
+    fn observe_s4vector(&mut self, s_k: &S4Vector) {
+        self.counter = self.counter.max(s_k.sum);
     }
 
     /// Algorithm 4 (findlist): return the index of the pos-th visible node (1-indexed).
@@ -367,8 +374,9 @@ mod tests {
         rga2.apply(del_op);
 
         assert_eq!(rga1.to_string(), rga2.to_string());
-        // 'b' has s_k.sum=2; 'x' has s_k.sum=1 → b has higher priority → b before x
-        assert_eq!(rga1.to_string(), "bx");
+        // rga2 observed 'b' before creating 'x', so 'x' gets a higher counter
+        // and wins priority among inserts after the tombstoned 'a'.
+        assert_eq!(rga1.to_string(), "xb");
     }
 
     #[test]

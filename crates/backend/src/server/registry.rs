@@ -82,9 +82,9 @@ impl Registry {
 
     /// Core CRDT sync algorithm (spec §4).
     ///
-    /// Step 1: apply incoming local ops to X's RGA (uses X's s_k / sid).
-    /// Step 2: queue the resulting S4Vector ops into every OTHER client's pending_ops.
-    /// Step 3: drain X's accumulated pending remote ops and apply them to X's RGA.
+    /// Step 1: drain X's accumulated pending remote ops and apply them to X's RGA.
+    /// Step 2: apply incoming local ops to X's RGA (uses X's s_k / sid).
+    /// Step 3: queue the resulting S4Vector ops into every OTHER client's pending_ops.
     /// Step 4: broadcast canonical state to all clients.
     pub async fn process_sync(&self, from_site: u64, ops: Vec<ClientOp>, cursor: Option<usize>) {
         let mut clients = self.inner.write().await;
@@ -100,7 +100,16 @@ impl Registry {
             clients.get_mut(&from_site).unwrap().cursor_pos = Some(pos);
         }
 
-        // Step 1 — local ops → S4Vector ops
+        // Step 1 — bring this client's server-side RGA up to the state it has
+        // already seen via broadcasts, so position-based local ops resolve
+        // against the same document the browser edited.
+        let pending = std::mem::take(&mut clients.get_mut(&from_site).unwrap().pending_ops);
+        let client = clients.get_mut(&from_site).unwrap();
+        for op in pending {
+            client.rga.apply(op);
+        }
+
+        // Step 2 — local ops → S4Vector ops
         let mut s4v_ops: Vec<Op> = Vec::new();
         for client_op in ops {
             let client = clients.get_mut(&from_site).unwrap();
@@ -127,18 +136,11 @@ impl Registry {
             }
         }
 
-        // Step 2 — queue to all other clients
+        // Step 3 — queue to all other clients
         for (site_id, client) in clients.iter_mut() {
             if *site_id != from_site {
                 client.pending_ops.extend(s4v_ops.iter().cloned());
             }
-        }
-
-        // Step 3 — drain X's pending remote ops
-        let pending = std::mem::take(&mut clients.get_mut(&from_site).unwrap().pending_ops);
-        let client = clients.get_mut(&from_site).unwrap();
-        for op in pending {
-            client.rga.apply(op);
         }
 
         // Step 4 — broadcast canonical state to all
@@ -268,5 +270,42 @@ mod tests {
             msg["cursors"].get("1").is_none(),
             "disconnected site should not appear in cursors"
         );
+    }
+
+    #[tokio::test]
+    async fn test_local_edits_after_remote_state_apply_at_visible_positions() {
+        let registry = Registry::new();
+        let (mut _rx1, _, _) = registry.connect(1).await;
+        let (mut rx2, _, _) = registry.connect(2).await;
+
+        let hello_world = "Hello World"
+            .chars()
+            .enumerate()
+            .map(|(pos, ch)| ClientOp {
+                op: "insert".to_string(),
+                pos,
+                ch: Some(ch),
+            })
+            .collect();
+        registry.process_sync(1, hello_world, None).await;
+
+        let client2_state: serde_json::Value =
+            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        assert_eq!(client2_state["text"], "Hello World");
+
+        let what_after_hello = "What"
+            .chars()
+            .enumerate()
+            .map(|(offset, ch)| ClientOp {
+                op: "insert".to_string(),
+                pos: 5 + offset,
+                ch: Some(ch),
+            })
+            .collect();
+        registry.process_sync(2, what_after_hello, None).await;
+
+        let merged: serde_json::Value =
+            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        assert_eq!(merged["text"], "HelloWhat World");
     }
 }
