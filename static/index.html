@@ -56,17 +56,25 @@
     // ---------------------------------------------------------------------------
 
     // Extract plain text, skipping peer-cursor spans.
+    // Also treats <br> nodes as \n — fallback for any browser-generated line breaks.
     function getPlainText(el) {
         let text = '';
-        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
             acceptNode(node) {
-                return node.parentElement.classList.contains('peer-cursor')
-                    ? NodeFilter.FILTER_REJECT
-                    : NodeFilter.FILTER_ACCEPT;
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    if (node.classList && node.classList.contains('peer-cursor')) return NodeFilter.FILTER_REJECT;
+                    if (node.nodeName === 'BR') return NodeFilter.FILTER_ACCEPT;
+                    return NodeFilter.FILTER_SKIP;
+                }
+                if (node.parentElement && node.parentElement.classList.contains('peer-cursor')) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
             }
         });
         let node;
-        while ((node = walker.nextNode())) text += node.textContent;
+        while ((node = walker.nextNode())) {
+            if (node.nodeName === 'BR') text += '\n';
+            else text += node.textContent;
+        }
         return text;
     }
 
@@ -287,13 +295,21 @@
         startSyncTimer();
     });
 
-    // Intercept Enter so the browser doesn't insert <div>/<br> elements.
-    // Insert a literal \n text node instead — getPlainText reads it correctly
-    // and white-space: pre-wrap renders it as a line break.
+    // Intercept Enter: directly insert a \n text node via Selection API.
+    // execCommand('insertText') produces <br> in Chrome, which getPlainText misses → sync revert.
     editor.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') {
             e.preventDefault();
-            document.execCommand('insertText', false, '\n');
+            const sel = window.getSelection();
+            if (!sel || !sel.rangeCount) return;
+            const range = sel.getRangeAt(0);
+            range.deleteContents();
+            const textNode = document.createTextNode('\n');
+            range.insertNode(textNode);
+            range.setStartAfter(textNode);
+            range.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(range);
         }
     });
 
