@@ -7,6 +7,10 @@
   content: "Start typing...";
 }
 
+.editor .cm-editor {
+  height: 100%;
+}
+
 .peer-cursor {
   display: inline-block;
   width: 0;

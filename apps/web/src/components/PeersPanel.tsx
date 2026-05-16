@@ -1,15 +1,16 @@
-import { PEER_COLORS } from "../collaboration/types";
+import { colorForReplica, shortReplicaId } from "../collaboration/types";
 import { useCollaborationStore } from "../stores/collaborationStore";
 
 export function PeersPanel() {
-  const siteId = useCollaborationStore((state) => state.siteId);
-  const cursors = useCollaborationStore((state) => state.cursors);
+  const replicaId = useCollaborationStore((state) => state.replicaId);
+  const presence = useCollaborationStore((state) => state.presence);
   const clientCount = useCollaborationStore((state) => state.clientCount);
-  const remoteEntries = Object.entries(cursors)
-    .filter(([sid]) => Number(sid) !== siteId)
-    .sort(([a], [b]) => Number(a) - Number(b));
-  const knownClientCount = remoteEntries.length + (siteId === null ? 0 : 1);
+  const remoteEntries = Object.values(presence)
+    .filter((peer) => peer.replica_id !== replicaId)
+    .sort((left, right) => left.replica_id.localeCompare(right.replica_id));
+  const knownClientCount = remoteEntries.length + (replicaId === null ? 0 : 1);
   const displayedClientCount = clientCount || knownClientCount;
+  const ownCursor = replicaId === null ? undefined : presence[replicaId]?.cursor;
 
   return (
     <aside className="border p-5" aria-label="Clients">
@@ -20,43 +21,43 @@ export function PeersPanel() {
         </span>
       </div>
 
-      {siteId === null ? (
-        <p className="text-sm">Waiting for client id</p>
+      {replicaId === null ? (
+        <p className="text-sm">Waiting for replica</p>
       ) : (
         <>
           <div
             className="grid grid-cols-[10px_1fr_auto] items-center gap-3 border-b py-3 text-sm"
-            key={siteId}
+            key={replicaId}
           >
             <span
               className="h-2.5 w-2.5 rounded-full"
               style={{
-                backgroundColor: PEER_COLORS[siteId % PEER_COLORS.length],
+                backgroundColor: colorForReplica(replicaId),
               }}
             />
             <span>
-              Site #{siteId} <span className="font-semibold">(you)</span>
+              {shortReplicaId(replicaId)} <span className="font-semibold">(you)</span>
             </span>
-            {cursors[String(siteId)] === undefined ? (
+            {ownCursor === undefined ? (
               <span />
             ) : (
-              <strong className="font-semibold">@ {cursors[String(siteId)]}</strong>
+              <strong className="font-semibold">@ {ownCursor}</strong>
             )}
           </div>
 
-          {remoteEntries.map(([sid, pos]) => (
+          {remoteEntries.map((peer) => (
             <div
               className="grid grid-cols-[10px_1fr_auto] items-center gap-3 border-b py-3 text-sm"
-              key={sid}
+              key={peer.replica_id}
             >
               <span
                 className="h-2.5 w-2.5 rounded-full"
                 style={{
-                  backgroundColor: PEER_COLORS[Number(sid) % PEER_COLORS.length],
+                  backgroundColor: colorForReplica(peer.replica_id),
                 }}
               />
-              <span>Site #{sid}</span>
-              <strong className="font-semibold">@ {pos}</strong>
+              <span>{shortReplicaId(peer.replica_id)}</span>
+              <strong className="font-semibold">@ {peer.cursor}</strong>
             </div>
           ))}
         </>

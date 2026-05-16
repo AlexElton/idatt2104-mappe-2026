@@ -1,4 +1,4 @@
-import type { ClientOpsMsg, ConnectionStatus, ServerMsg } from "./types";
+import type { ClientMsg, ConnectionStatus, ServerMsg } from "./types";
 
 type SocketClientOptions = {
   onConnectionChange: (connection: ConnectionStatus) => void;
@@ -58,7 +58,7 @@ export class SocketClient {
     ws.close();
   }
 
-  send(message: ClientOpsMsg) {
+  send(message: ClientMsg) {
     if (!this.isOpen) return;
     this.ws?.send(JSON.stringify(message));
   }
