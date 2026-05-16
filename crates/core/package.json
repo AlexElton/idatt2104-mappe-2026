@@ -3,15 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "files": [
+    "src",
     "pkg"
   ],
   "type": "module",
-  "module": "./pkg/rga_core.js",
-  "types": "./pkg/rga_core.d.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./pkg/rga_core.d.ts",
-      "default": "./pkg/rga_core.js"
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
     }
   },
   "scripts": {
