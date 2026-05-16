@@ -1,36 +1,67 @@
+import type { Op } from "rga-core";
+
+export type { ApplyOutcome, Op, OperationId } from "rga-core";
+
 export const PEER_COLORS = ["#4ec9b0", "#ce9178", "#dcdcaa", "#9cdcfe", "#c586c0", "#f44747"];
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "error";
 
-export type ClientOp = {
-  op: "insert" | "delete";
-  pos: number;
-  char?: string;
+export type Presence = {
+  replica_id: string;
+  cursor: number;
+};
+
+export type HelloMsg = {
+  type: "hello";
+  replica_id: string;
+  session_id: string;
 };
 
 export type ClientOpsMsg = {
   type: "ops";
-  ops: ClientOp[];
-  cursor?: number;
+  ops: Op[];
 };
 
-export type InitMsg = {
-  type: "init";
-  site_id: number;
-  text: string;
-  cursors: Record<string, number>;
+export type ClientPresenceMsg = {
+  type: "presence";
+  presence: Presence;
 };
 
-export type StateMsg = {
-  type: "state";
-  text: string;
-  cursors: Record<string, number>;
+export type ClientMsg = HelloMsg | ClientOpsMsg | ClientPresenceMsg;
+
+export type HydrateMsg = {
+  type: "hydrate";
+  ops: Op[];
+  presence: Record<string, Presence>;
   clients: number;
 };
 
-export type ServerMsg = InitMsg | StateMsg;
+export type RemoteOpsMsg = {
+  type: "ops";
+  ops: Op[];
+};
+
+export type PresenceStateMsg = {
+  type: "presence";
+  presence: Record<string, Presence>;
+  clients: number;
+};
+
+export type ServerMsg = HydrateMsg | RemoteOpsMsg | PresenceStateMsg;
 
 export type Peer = {
-  sid: number;
+  replicaId: string;
   pos: number;
 };
+
+export function colorForReplica(replicaId: string): string {
+  let hash = 0;
+  for (let index = 0; index < replicaId.length; index++) {
+    hash = (hash * 31 + replicaId.charCodeAt(index)) >>> 0;
+  }
+  return PEER_COLORS[hash % PEER_COLORS.length];
+}
+
+export function shortReplicaId(replicaId: string): string {
+  return replicaId.length <= 8 ? replicaId : replicaId.slice(0, 8);
+}
