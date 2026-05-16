@@ -1,7 +1,7 @@
 {
   "editor.defaultFormatter": "oxc.oxc-vscode",
   "editor.codeActionsOnSave": {
-    "source.fixAll.oxc": "always",
+    "source.fixAll.oxc": "always"
   },
   "oxc.enable": true,
   "oxc.enable.oxfmt": true,
@@ -14,5 +14,5 @@
 
   "[javascript][javascriptreact][json][jsonc][typescript][typescriptreact]": {
     "editor.defaultFormatter": "oxc.oxc-vscode"
-  },
+  }
 }
