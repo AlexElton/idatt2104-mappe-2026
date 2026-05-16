@@ -1,315 +1,301 @@
-use rga_core::{Op, Rga};
-use serde::Serialize;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use rga_core::{ApplyOutcome, Op, Replica};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc};
 
-pub type Rx = mpsc::UnboundedReceiver<String>;
-type Tx = mpsc::UnboundedSender<String>;
+pub type Rx = mpsc::UnboundedReceiver<ServerMsg>;
+type Tx = mpsc::UnboundedSender<ServerMsg>;
 
-/// A position-based op from the client — no S4Vectors needed in the browser.
-#[derive(Debug)]
-pub struct ClientOp {
-    pub op: String,       // "insert", "delete", or "update"
-    pub pos: usize,       // 0-indexed visible-character position
-    pub ch: Option<char>, // present for insert/update, absent for delete
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Presence {
+    pub replica_id: String,
+    pub cursor: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientMsg {
+    Hello {
+        replica_id: String,
+        session_id: String,
+    },
+    Ops {
+        ops: Vec<Op>,
+    },
+    Presence {
+        presence: Presence,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ServerMsg {
+    Hydrate {
+        ops: Vec<Op>,
+        presence: HashMap<String, Presence>,
+        clients: usize,
+    },
+    Ops {
+        ops: Vec<Op>,
+    },
+    Presence {
+        presence: HashMap<String, Presence>,
+        clients: usize,
+    },
 }
 
 struct ClientInfo {
     tx: Tx,
-    rga: Rga,
-    pending_ops: Vec<Op>,      // remote ops queued until this client's next sync
-    cursor_pos: Option<usize>, // LWW register: last reported caret position
+    replica_id: Option<String>,
+    _session_id: Option<String>,
 }
 
-/// Server → client: broadcast after every sync.
-#[derive(Serialize)]
-struct StateMsg<'a> {
-    #[serde(rename = "type")]
-    msg_type: &'static str,
-    text: &'a str,
-    clients: usize,
-    cursors: HashMap<u64, usize>,
+struct DocumentSession {
+    replica: Replica,
+    op_log: Vec<Op>,
+    clients: HashMap<u64, ClientInfo>,
+    presence: HashMap<String, Presence>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Registry {
-    inner: Arc<RwLock<HashMap<u64, ClientInfo>>>,
+    inner: Arc<RwLock<DocumentSession>>,
 }
 
 impl Registry {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(RwLock::new(DocumentSession {
+                replica: Replica::new("server".to_string(), new_server_session_id()),
+                op_log: Vec::new(),
+                clients: HashMap::new(),
+                presence: HashMap::new(),
+            })),
+        }
     }
 
-    /// Register a new client. Returns (rx channel, current canonical text for init msg,
-    /// and the current cursor positions of all already-connected clients).
-    /// Hydrates the new client's RGA by replaying existing document ops (see hydration_ops),
-    /// so late joiners can delete and update pre-existing content correctly.
-    pub async fn connect(&self, site_id: u64) -> (Rx, String, HashMap<u64, usize>) {
-        let mut clients = self.inner.write().await;
-        let (tx, rx) = mpsc::unbounded_channel::<String>();
+    pub async fn connect(&self, connection_id: u64) -> (Rx, ServerMsg) {
+        let (tx, rx) = mpsc::unbounded_channel::<ServerMsg>();
+        let mut session = self.inner.write().await;
 
-        // Replay the existing document into the new client's RGA
-        let mut new_rga = Rga::new(site_id, 0);
-        if let Some(existing) = clients.values().next() {
-            for op in existing.rga.hydration_ops() {
-                new_rga.apply(op);
-            }
-        }
-        let current_text = new_rga.to_string();
-
-        clients.insert(
-            site_id,
+        session.clients.insert(
+            connection_id,
             ClientInfo {
                 tx,
-                rga: new_rga,
-                pending_ops: Vec::new(),
-                cursor_pos: None,
+                replica_id: None,
+                _session_id: None,
             },
         );
 
-        let cursors: HashMap<u64, usize> = clients
-            .iter()
-            .filter_map(|(sid, c)| c.cursor_pos.map(|pos| (*sid, pos)))
-            .collect();
+        let hydrate = ServerMsg::Hydrate {
+            ops: session.op_log.clone(),
+            presence: session.presence.clone(),
+            clients: session.clients.len(),
+        };
 
         println!(
-            "[INFO] site {} connected ({} clients)",
-            site_id,
-            clients.len()
+            "[INFO] connection {} connected ({} clients)",
+            connection_id,
+            session.clients.len()
         );
-        (rx, current_text, cursors)
+        (rx, hydrate)
     }
 
-    /// Remove a disconnected client.
-    pub async fn disconnect(&self, site_id: u64) {
-        let mut clients = self.inner.write().await;
-        clients.remove(&site_id);
+    pub async fn disconnect(&self, connection_id: u64) {
+        let mut session = self.inner.write().await;
+        let removed = session.clients.remove(&connection_id);
+        if let Some(client) = removed
+            && let Some(replica_id) = client.replica_id
+        {
+            session.presence.remove(&replica_id);
+        }
+
+        let message = ServerMsg::Presence {
+            presence: session.presence.clone(),
+            clients: session.clients.len(),
+        };
+        broadcast(&session.clients, message, None);
+
         println!(
-            "[INFO] site {} disconnected ({} clients)",
-            site_id,
-            clients.len()
+            "[INFO] connection {} disconnected ({} clients)",
+            connection_id,
+            session.clients.len()
         );
     }
 
-    /// Core CRDT sync algorithm (spec §4).
-    ///
-    /// Step 1: drain X's accumulated pending remote ops and apply them to X's RGA.
-    /// Step 2: apply incoming local ops to X's RGA (uses X's s_k / sid).
-    /// Step 3: queue the resulting S4Vector ops into every OTHER client's pending_ops.
-    /// Step 4: broadcast canonical state to all clients.
-    pub async fn process_sync(&self, from_site: u64, ops: Vec<ClientOp>, cursor: Option<usize>) {
-        let mut clients = self.inner.write().await;
+    pub async fn set_identity(&self, connection_id: u64, replica_id: String, session_id: String) {
+        let mut session = self.inner.write().await;
+        let Some(client) = session.clients.get_mut(&connection_id) else {
+            eprintln!("[WARN] hello for unknown connection {}", connection_id);
+            return;
+        };
 
-        if !clients.contains_key(&from_site) {
-            eprintln!("[WARN] process_sync for unknown site {}", from_site);
+        client.replica_id = Some(replica_id);
+        client._session_id = Some(session_id);
+    }
+
+    pub async fn process_ops(&self, from_connection: u64, ops: Vec<Op>) {
+        let mut session = self.inner.write().await;
+        if !session.clients.contains_key(&from_connection) {
+            eprintln!("[WARN] ops for unknown connection {}", from_connection);
             return;
         }
 
-        // LWW write — overwrite unconditionally; sequential write lock enforces ordering.
-        // Reference: Shapiro et al. 2011, Section 3.1 (LWW Register).
-        if let Some(pos) = cursor {
-            clients.get_mut(&from_site).unwrap().cursor_pos = Some(pos);
-        }
-
-        // Step 1 — bring this client's server-side RGA up to the state it has
-        // already seen via broadcasts, so position-based local ops resolve
-        // against the same document the browser edited.
-        let pending = std::mem::take(&mut clients.get_mut(&from_site).unwrap().pending_ops);
-        let client = clients.get_mut(&from_site).unwrap();
-        for op in pending {
-            client.rga.apply(op);
-        }
-
-        // Step 2 — local ops → S4Vector ops
-        let mut s4v_ops: Vec<Op> = Vec::new();
-        for client_op in ops {
-            let client = clients.get_mut(&from_site).unwrap();
-            let result = match client_op.op.as_str() {
-                "insert" => match client_op.ch {
-                    Some(ch) => client.rga.local_insert(client_op.pos, ch),
-                    None => {
-                        eprintln!("[WARN] insert from site {} missing char", from_site);
-                        None
-                    }
-                },
-                "delete" => client.rga.local_delete(client_op.pos),
-                "update" => match client_op.ch {
-                    Some(ch) => client.rga.local_update(client_op.pos, ch),
-                    None => None,
-                },
-                other => {
-                    eprintln!("[WARN] unknown op '{}' from site {}", other, from_site);
-                    None
+        let mut accepted = Vec::new();
+        for op in ops {
+            let outcome = session.replica.apply_remote(op.clone());
+            match outcome {
+                ApplyOutcome::Applied => {
+                    session.op_log.push(op.clone());
+                    accepted.push(op);
                 }
-            };
-            if let Some(op) = result {
-                s4v_ops.push(op);
-            }
-        }
-
-        // Step 3 — queue to all other clients
-        for (site_id, client) in clients.iter_mut() {
-            if *site_id != from_site {
-                client.pending_ops.extend(s4v_ops.iter().cloned());
-            }
-        }
-
-        // Step 4 — broadcast canonical state to all
-        let canonical = clients[&from_site].rga.to_string();
-        let count = clients.len();
-        let cursors: HashMap<u64, usize> = clients
-            .iter()
-            .filter_map(|(sid, c)| c.cursor_pos.map(|pos| (*sid, pos)))
-            .collect();
-        let json = serde_json::to_string(&StateMsg {
-            msg_type: "state",
-            text: &canonical,
-            clients: count,
-            cursors,
-        })
-        .expect("serialize StateMsg");
-
-        for client in clients.values() {
-            if client.tx.send(json.clone()).is_err() {
-                // Recipient will be cleaned up when their WS task notices the disconnect
-            }
-        }
-
-        // Step 5 — GC pass: prune tombstones acknowledged by all connected clients.
-        // A tombstone at s_k is safe to remove iff:
-        //   (a) every client RGA has s_k tombstoned, AND
-        //   (b) no client's pending_ops contains Insert{left: Some(s_k)}.
-        // Condition (b) guards against a race: a peer may have generated
-        // Insert{left=s_k} before learning of the Delete, queued it here, but not
-        // yet had it applied to its RGA. If we GC while that Insert is pending,
-        // remote_insert finds no anchor and falls back to head → divergence.
-        // Reference: Section 5.6, Roh et al. 2011.
-        let site_ids: Vec<u64> = clients.keys().copied().collect();
-        let candidates = clients[&from_site].rga.tombstoned_keys();
-        for s_k in candidates {
-            let safe = site_ids.iter().all(|sid| {
-                let c = &clients[sid];
-                c.rga.is_tombstoned(&s_k)
-                    && !c
-                        .pending_ops
-                        .iter()
-                        .any(|op| matches!(op, Op::Insert { left: Some(l), .. } if l == &s_k))
-            });
-            if safe {
-                for sid in &site_ids {
-                    clients.get_mut(sid).unwrap().rga.gc_node(&s_k);
+                ApplyOutcome::Duplicate => {}
+                ApplyOutcome::MissingDependency | ApplyOutcome::Invalid => {
+                    eprintln!(
+                        "[WARN] rejected op from connection {}: {:?}",
+                        from_connection, outcome
+                    );
                 }
-                println!("[INFO] [GC] pruned tombstone {}", s_k);
             }
         }
+
+        if accepted.is_empty() {
+            return;
+        }
+
+        broadcast(
+            &session.clients,
+            ServerMsg::Ops { ops: accepted },
+            Some(from_connection),
+        );
     }
+
+    pub async fn update_presence(&self, connection_id: u64, presence: Presence) {
+        let mut session = self.inner.write().await;
+        let Some(client) = session.clients.get_mut(&connection_id) else {
+            eprintln!("[WARN] presence for unknown connection {}", connection_id);
+            return;
+        };
+
+        if client.replica_id.as_deref() != Some(presence.replica_id.as_str()) {
+            client.replica_id = Some(presence.replica_id.clone());
+        }
+        session
+            .presence
+            .insert(presence.replica_id.clone(), presence);
+
+        let message = ServerMsg::Presence {
+            presence: session.presence.clone(),
+            clients: session.clients.len(),
+        };
+        broadcast(&session.clients, message, None);
+    }
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn broadcast(clients: &HashMap<u64, ClientInfo>, message: ServerMsg, skip: Option<u64>) {
+    for (connection_id, client) in clients {
+        if Some(*connection_id) == skip {
+            continue;
+        }
+        let _ = client.tx.send(message.clone());
+    }
+}
+
+fn new_server_session_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("server-{nanos}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_cursor_lww_overwrite() {
-        let registry = Registry::new();
-        let (mut _rx1, _, _) = registry.connect(1).await;
-        let (mut rx2, _, _) = registry.connect(2).await;
-
-        registry.process_sync(1, vec![], Some(5)).await;
-        registry.process_sync(1, vec![], Some(10)).await;
-
-        let msg1: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-        let msg2: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-
-        assert_eq!(msg1["cursors"]["1"], 5);
-        assert_eq!(msg2["cursors"]["1"], 10);
+    fn replica(name: &str) -> Replica {
+        Replica::new(name.to_string(), format!("{name}-session"))
     }
 
     #[tokio::test]
-    async fn test_cursor_none_preserves_previous() {
+    async fn hydration_contains_accepted_ops() {
         let registry = Registry::new();
-        let (mut _rx1, _, _) = registry.connect(1).await;
-        let (mut rx2, _, _) = registry.connect(2).await;
+        let (_rx1, _) = registry.connect(1).await;
+        let mut source = replica("a");
+        let op = source.local_insert(0, 'x').unwrap();
 
-        registry.process_sync(1, vec![], Some(7)).await;
-        registry.process_sync(1, vec![], None).await;
+        registry.process_ops(1, vec![op]).await;
 
-        let _: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-        let msg2: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-
-        assert_eq!(msg2["cursors"]["1"], 7);
+        let (_rx2, hydrate) = registry.connect(2).await;
+        let ServerMsg::Hydrate { ops, .. } = hydrate else {
+            panic!("expected hydrate");
+        };
+        assert_eq!(ops.len(), 1);
     }
 
     #[tokio::test]
-    async fn test_cursor_broadcast_includes_all_sites() {
+    async fn process_ops_does_not_echo_sender() {
         let registry = Registry::new();
-        let (mut rx1, _, _) = registry.connect(1).await;
-        let (mut _rx2, _, _) = registry.connect(2).await;
+        let (mut rx1, _) = registry.connect(1).await;
+        let (mut rx2, _) = registry.connect(2).await;
+        let mut source = replica("a");
+        let op = source.local_insert(0, 'x').unwrap();
 
-        registry.process_sync(1, vec![], Some(3)).await;
-        registry.process_sync(2, vec![], Some(8)).await;
+        registry.process_ops(1, vec![op]).await;
 
-        let _: serde_json::Value = serde_json::from_str(&rx1.try_recv().unwrap()).unwrap();
-        let msg2: serde_json::Value = serde_json::from_str(&rx1.try_recv().unwrap()).unwrap();
-
-        assert_eq!(msg2["cursors"]["1"], 3);
-        assert_eq!(msg2["cursors"]["2"], 8);
+        assert!(rx1.try_recv().is_err());
+        assert!(matches!(rx2.try_recv().unwrap(), ServerMsg::Ops { .. }));
     }
 
     #[tokio::test]
-    async fn test_cursor_cleared_on_disconnect() {
+    async fn duplicate_ops_are_not_rebroadcast() {
         let registry = Registry::new();
-        let (mut _rx1, _, _) = registry.connect(1).await;
-        let (mut rx2, _, _) = registry.connect(2).await;
+        let (_rx1, _) = registry.connect(1).await;
+        let (mut rx2, _) = registry.connect(2).await;
+        let mut source = replica("a");
+        let op = source.local_insert(0, 'x').unwrap();
 
-        registry.process_sync(1, vec![], Some(5)).await;
-        let _: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
+        registry.process_ops(1, vec![op.clone()]).await;
+        let _ = rx2.try_recv().unwrap();
+        registry.process_ops(1, vec![op]).await;
+
+        assert!(rx2.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn presence_is_removed_on_disconnect() {
+        let registry = Registry::new();
+        let (_rx1, _) = registry.connect(1).await;
+        let (mut rx2, _) = registry.connect(2).await;
+
+        registry
+            .update_presence(
+                1,
+                Presence {
+                    replica_id: "a".to_string(),
+                    cursor: 3,
+                },
+            )
+            .await;
+        let _ = rx2.try_recv().unwrap();
 
         registry.disconnect(1).await;
-        registry.process_sync(2, vec![], Some(2)).await;
 
-        let msg: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-
-        assert!(
-            msg["cursors"].get("1").is_none(),
-            "disconnected site should not appear in cursors"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_local_edits_after_remote_state_apply_at_visible_positions() {
-        let registry = Registry::new();
-        let (mut _rx1, _, _) = registry.connect(1).await;
-        let (mut rx2, _, _) = registry.connect(2).await;
-
-        let hello_world = "Hello World"
-            .chars()
-            .enumerate()
-            .map(|(pos, ch)| ClientOp {
-                op: "insert".to_string(),
-                pos,
-                ch: Some(ch),
-            })
-            .collect();
-        registry.process_sync(1, hello_world, None).await;
-
-        let client2_state: serde_json::Value =
-            serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-        assert_eq!(client2_state["text"], "Hello World");
-
-        let what_after_hello = "What"
-            .chars()
-            .enumerate()
-            .map(|(offset, ch)| ClientOp {
-                op: "insert".to_string(),
-                pos: 5 + offset,
-                ch: Some(ch),
-            })
-            .collect();
-        registry.process_sync(2, what_after_hello, None).await;
-
-        let merged: serde_json::Value = serde_json::from_str(&rx2.try_recv().unwrap()).unwrap();
-        assert_eq!(merged["text"], "HelloWhat World");
+        let ServerMsg::Presence { presence, clients } = rx2.try_recv().unwrap() else {
+            panic!("expected presence");
+        };
+        assert_eq!(clients, 1);
+        assert!(!presence.contains_key("a"));
     }
 }

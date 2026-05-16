@@ -1,4 +1,3 @@
-mod crdt;
 mod server;
 
 use server::handler::{AppState, router};

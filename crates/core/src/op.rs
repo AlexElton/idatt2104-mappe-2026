@@ -1,33 +1,45 @@
 use serde::{Deserialize, Serialize};
 
-use crate::s4vector::S4Vector;
+use crate::{NodeId, OperationId};
 
-/// An operation that can be applied to an RGA.
-/// These are broadcast over WebSocket to remote sites.
-///
-/// Insert: add a new character after `left` (None = at head).
-///   `s_k` is the new node's permanent identity (used as SVI hash key).
-///
-/// Delete: mark the node identified by `target` as a tombstone.
-///   `s_k` is this Delete operation's own s4vector (stored as new s_p on the node).
-///
-/// Update: replace the object in node `target` if this op has higher precedence.
-///   `s_k` is this Update operation's own s4vector (compared against node's s_p).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Op {
     Insert {
-        left: Option<S4Vector>,
-        obj: char,
-        s_k: S4Vector,
+        left: Option<NodeId>,
+        value: char,
+        id: NodeId,
     },
     Delete {
-        target: S4Vector,
-        s_k: S4Vector,
+        target: NodeId,
+        id: OperationId,
     },
-    Update {
-        target: S4Vector,
-        obj: char,
-        s_k: S4Vector,
-    },
+}
+
+impl Op {
+    pub fn id(&self) -> &OperationId {
+        match self {
+            Op::Insert { id, .. } | Op::Delete { id, .. } => id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyOutcome {
+    Applied,
+    Duplicate,
+    MissingDependency,
+    Invalid,
+}
+
+impl ApplyOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ApplyOutcome::Applied => "applied",
+            ApplyOutcome::Duplicate => "duplicate",
+            ApplyOutcome::MissingDependency => "missing_dependency",
+            ApplyOutcome::Invalid => "invalid",
+        }
+    }
 }

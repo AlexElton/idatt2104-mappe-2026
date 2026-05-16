@@ -1,9 +1,6 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use axum::{
@@ -16,54 +13,25 @@ use axum::{
     routing::get,
 };
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 
-use crate::server::registry::{ClientOp, Registry, Rx};
+use crate::server::registry::{ClientMsg, Registry, Rx};
 
-/// Client → server: a batch of position-based ops sent on each sync interval.
-#[derive(Debug, Deserialize)]
-struct ClientOpsMsg {
-    #[serde(rename = "type")]
-    msg_type: String,
-    ops: Vec<ClientOpJson>,
-    cursor: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClientOpJson {
-    op: String,
-    pos: usize,
-    #[serde(rename = "char")]
-    ch: Option<char>,
-}
-
-/// Server → client: sent once on connect.
-#[derive(Serialize)]
-struct InitMsg<'a> {
-    #[serde(rename = "type")]
-    msg_type: &'static str,
-    site_id: u64,
-    text: &'a str,
-    cursors: HashMap<u64, usize>,
-}
-
-/// Shared server state — cheap to clone (Arc inside Registry).
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Registry,
-    pub next_site_id: Arc<AtomicU64>,
+    pub next_connection_id: Arc<AtomicU64>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             registry: Registry::new(),
-            next_site_id: Arc::new(AtomicU64::new(1)),
+            next_connection_id: Arc::new(AtomicU64::new(1)),
         }
     }
 
-    fn assign_site_id(&self) -> u64 {
-        self.next_site_id.fetch_add(1, Ordering::Relaxed)
+    fn assign_connection_id(&self) -> u64 {
+        self.next_connection_id.fetch_add(1, Ordering::Relaxed)
     }
 }
 
@@ -83,71 +51,66 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
-    let site_id = state.assign_site_id();
-    let (rx, current_text, init_cursors) = state.registry.connect(site_id).await;
+    let connection_id = state.assign_connection_id();
+    let (rx, hydrate) = state.registry.connect(connection_id).await;
     let (mut sink, mut stream) = socket.split();
 
-    // Send init message immediately
-    let init_json = serde_json::to_string(&InitMsg {
-        msg_type: "init",
-        site_id,
-        text: &current_text,
-        cursors: init_cursors,
-    })
-    .expect("serialize InitMsg");
-
-    if sink.send(WsMessage::Text(init_json)).await.is_err() {
-        state.registry.disconnect(site_id).await;
+    let hydrate_json = serde_json::to_string(&hydrate).expect("serialize hydrate message");
+    if sink.send(WsMessage::Text(hydrate_json)).await.is_err() {
+        state.registry.disconnect(connection_id).await;
         return;
     }
 
-    // Outbound task: forward JSON strings from the registry channel to this WebSocket.
     let mut send_task = tokio::spawn(async move {
         let mut rx: Rx = rx;
-        while let Some(json) = rx.recv().await {
+        while let Some(message) = rx.recv().await {
+            let json = match serde_json::to_string(&message) {
+                Ok(json) => json,
+                Err(error) => {
+                    eprintln!("[WARN] failed to serialize server message: {error}");
+                    continue;
+                }
+            };
+
             if sink.send(WsMessage::Text(json)).await.is_err() {
                 break;
             }
         }
     });
 
-    // Inbound task: receive op batches from this client, run the CRDT sync algorithm.
     let registry = state.registry.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
             let text = match msg {
-                Ok(WsMessage::Text(t)) => t,
+                Ok(WsMessage::Text(text)) => text,
                 Ok(WsMessage::Close(_)) | Err(_) => break,
                 _ => continue,
             };
 
-            let parsed: ClientOpsMsg = match serde_json::from_str(&text) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("[WARN] bad message from site {}: {}", site_id, e);
+            let parsed: ClientMsg = match serde_json::from_str(&text) {
+                Ok(message) => message,
+                Err(error) => {
+                    eprintln!("[WARN] bad message from connection {connection_id}: {error}");
                     continue;
                 }
             };
 
-            if parsed.msg_type != "ops" {
-                eprintln!(
-                    "[WARN] unknown msg type '{}' from site {}",
-                    parsed.msg_type, site_id
-                );
-                continue;
+            match parsed {
+                ClientMsg::Hello {
+                    replica_id,
+                    session_id,
+                } => {
+                    registry
+                        .set_identity(connection_id, replica_id, session_id)
+                        .await;
+                }
+                ClientMsg::Ops { ops } => {
+                    registry.process_ops(connection_id, ops).await;
+                }
+                ClientMsg::Presence { presence } => {
+                    registry.update_presence(connection_id, presence).await;
+                }
             }
-
-            let ops: Vec<ClientOp> = parsed
-                .ops
-                .into_iter()
-                .map(|o| ClientOp {
-                    op: o.op,
-                    pos: o.pos,
-                    ch: o.ch,
-                })
-                .collect();
-
-            registry.process_sync(site_id, ops, parsed.cursor).await;
         }
     });
 
@@ -156,5 +119,5 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         _ = &mut recv_task => send_task.abort(),
     }
 
-    state.registry.disconnect(site_id).await;
+    state.registry.disconnect(connection_id).await;
 }
