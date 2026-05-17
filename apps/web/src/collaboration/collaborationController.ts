@@ -31,32 +31,6 @@ const peerCursorField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
-const editorTheme = EditorView.theme({
-  "&": {
-    minHeight: "20rem",
-    height: "100%",
-    backgroundColor: "transparent",
-  },
-  "&.cm-focused": {
-    outline: "none",
-  },
-  ".cm-scroller": {
-    fontFamily: "inherit",
-    lineHeight: "1.625",
-    overflow: "auto",
-  },
-  ".cm-content": {
-    minHeight: "20rem",
-    padding: "1.25rem",
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    caretColor: "currentColor",
-  },
-  ".cm-line": {
-    padding: "0",
-  },
-});
-
 class CursorWidget extends WidgetType {
   constructor(
     private readonly replicaId: string,
@@ -91,20 +65,21 @@ class CollaborationController {
   private editorHost: HTMLElement | null = null;
   private editorView: EditorView | null = null;
   private outboundOps: Op[] = [];
+  private bufferedRemoteOps: Op[] = [];
   private reconnectTimer: number | null = null;
-  private syncTimer: number | null = null;
-  private countdownTimer: number | null = null;
   private stopped = true;
-  private lastIntervalMs = useCollaborationStore.getState().syncIntervalMs;
+  private lastSyncEnabled = useCollaborationStore.getState().syncEnabled;
   private unsubscribeStore: (() => void) | null = null;
 
   constructor() {
     useCollaborationStore.getState().setReplicaId(this.replicaId);
+    this.syncRgaTree();
     this.socket = new SocketClient({
       onConnectionChange: (connection) => {
         useCollaborationStore.getState().setConnection(connection);
         if (connection === "connected") {
           this.sendHello();
+          this.flushIfSyncEnabled();
         }
       },
       onMessage: (message) => this.receive(message),
@@ -117,15 +92,15 @@ class CollaborationController {
 
     this.stopped = false;
     this.unsubscribeStore = useCollaborationStore.subscribe((state) => {
-      if (state.syncIntervalMs !== this.lastIntervalMs) {
-        this.lastIntervalMs = state.syncIntervalMs;
-        this.scheduleSync();
+      if (state.syncEnabled !== this.lastSyncEnabled) {
+        this.lastSyncEnabled = state.syncEnabled;
+        if (state.syncEnabled) {
+          this.flushIfSyncEnabled();
+        }
       }
     });
 
     this.connect();
-    this.scheduleSync();
-    this.startCountdown();
   }
 
   stop() {
@@ -133,8 +108,6 @@ class CollaborationController {
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
     this.clearReconnect();
-    this.clearSync();
-    this.clearCountdown();
     this.socket.disconnect();
   }
 
@@ -152,7 +125,6 @@ class CollaborationController {
       state: EditorState.create({
         doc: this.replica.text(),
         extensions: [
-          editorTheme,
           peerCursorField,
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({
@@ -185,44 +157,26 @@ class CollaborationController {
     this.reconnectTimer = window.setTimeout(() => this.connect(), 2000);
   }
 
-  private scheduleSync() {
-    this.clearSync();
-    const intervalMs = useCollaborationStore.getState().syncIntervalMs;
-    this.syncTimer = window.setInterval(() => this.syncNow(), intervalMs);
-    useCollaborationStore.getState().setCountdownMs(intervalMs);
-  }
-
-  private startCountdown() {
-    this.clearCountdown();
-    this.countdownTimer = window.setInterval(() => {
-      if (this.socket.isOpen) {
-        useCollaborationStore.getState().tickCountdown(100);
-      }
-    }, 100);
-  }
-
-  private syncNow() {
-    if (!this.socket.isOpen) return;
+  private flushIfSyncEnabled() {
+    if (!this.isSyncEnabled()) return;
 
     const ops = this.outboundOps.splice(0);
-    if (ops.length > 0) {
+    if (ops.length > 0 && this.socket.isOpen) {
       this.socket.send({ type: "ops", ops });
+    } else {
+      this.outboundOps.unshift(...ops);
     }
 
-    const cursor = this.currentCursor();
-    if (cursor !== null) {
-      this.socket.send({
-        type: "presence",
-        presence: {
-          replica_id: this.replicaId,
-          cursor,
-        },
-      });
+    if (this.bufferedRemoteOps.length > 0) {
+      const outcomes = this.replica.applyRemoteBatch(this.bufferedRemoteOps.splice(0));
+      this.warnRejected(outcomes);
+      if (outcomes.includes("applied")) {
+        this.patchEditorText(this.replica.text());
+      }
     }
 
-    useCollaborationStore
-      .getState()
-      .setCountdownMs(useCollaborationStore.getState().syncIntervalMs);
+    this.sendPresence();
+    this.updateQueueCounts();
   }
 
   private receive(message: ServerMsg) {
@@ -230,12 +184,20 @@ class CollaborationController {
       case "hydrate":
         this.replica = new Replica(this.replicaId, this.sessionId);
         this.outboundOps = [];
+        this.bufferedRemoteOps = [];
         this.warnRejected(this.replica.applyRemoteBatch(message.ops));
         useCollaborationStore.getState().setPresenceState(message.presence, message.clients);
         this.patchEditorText(this.replica.text());
         this.refreshPeerCursors();
+        this.updateQueueCounts();
         return;
       case "ops": {
+        if (!this.isSyncEnabled()) {
+          this.bufferedRemoteOps.push(...message.ops);
+          this.updateQueueCounts();
+          return;
+        }
+
         const outcomes = this.replica.applyRemoteBatch(message.ops);
         this.warnRejected(outcomes);
         if (outcomes.includes("applied")) {
@@ -247,14 +209,29 @@ class CollaborationController {
         useCollaborationStore.getState().setPresenceState(message.presence, message.clients);
         this.refreshPeerCursors();
         return;
+      case "garbage_collect":
+        this.applyForcedGarbageCollection();
+        return;
+    }
+  }
+
+  garbageCollectTombstones() {
+    this.applyForcedGarbageCollection();
+    if (this.socket.isOpen) {
+      this.socket.send({ type: "garbage_collect" });
     }
   }
 
   private handleEditorUpdate(update: ViewUpdate) {
-    if (!update.docChanged) return;
     if (update.transactions.some((transaction) => transaction.annotation(remoteSyncAnnotation))) {
       return;
     }
+
+    if (update.selectionSet) {
+      this.sendPresence();
+    }
+
+    if (!update.docChanged) return;
 
     const deletions: Array<{ from: number; to: number }> = [];
     const insertions: Array<{ from: number; text: string }> = [];
@@ -297,6 +274,9 @@ class CollaborationController {
     const replicaText = this.replica.text();
     const editorText = update.state.doc.toString();
     useCollaborationStore.getState().setDocumentText(replicaText);
+    this.syncRgaTree();
+    this.flushIfSyncEnabled();
+    this.updateQueueCounts();
     if (replicaText !== editorText) {
       console.warn("RGA/editor mismatch", { replicaText, editorText });
     }
@@ -305,6 +285,7 @@ class CollaborationController {
   private patchEditorText(nextText: string) {
     const view = this.editorView;
     useCollaborationStore.getState().setDocumentText(nextText);
+    this.syncRgaTree();
     if (!view) return;
 
     const patch = singleRangePatch(view.state.doc.toString(), nextText);
@@ -352,6 +333,31 @@ class CollaborationController {
     return view.state.selection.main.head;
   }
 
+  private sendPresence() {
+    if (!this.socket.isOpen || !this.isSyncEnabled()) return;
+
+    const cursor = this.currentCursor();
+    if (cursor === null) return;
+
+    this.socket.send({
+      type: "presence",
+      presence: {
+        replica_id: this.replicaId,
+        cursor,
+      },
+    });
+  }
+
+  private isSyncEnabled(): boolean {
+    return useCollaborationStore.getState().syncEnabled;
+  }
+
+  private updateQueueCounts() {
+    useCollaborationStore
+      .getState()
+      .setQueueCounts(this.outboundOps.length, this.bufferedRemoteOps.length);
+  }
+
   private warnRejected(outcomes: ApplyOutcome[]) {
     const rejected = outcomes.filter((outcome) => outcome !== "applied" && outcome !== "duplicate");
     if (rejected.length > 0) {
@@ -359,24 +365,19 @@ class CollaborationController {
     }
   }
 
+  private syncRgaTree() {
+    useCollaborationStore.getState().setRgaTree(this.replica.rgaTree());
+  }
+
+  private applyForcedGarbageCollection() {
+    this.replica.clearDeletedNodes();
+    this.patchEditorText(this.replica.text());
+  }
+
   private clearReconnect() {
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
-    }
-  }
-
-  private clearSync() {
-    if (this.syncTimer !== null) {
-      window.clearInterval(this.syncTimer);
-      this.syncTimer = null;
-    }
-  }
-
-  private clearCountdown() {
-    if (this.countdownTimer !== null) {
-      window.clearInterval(this.countdownTimer);
-      this.countdownTimer = null;
     }
   }
 }

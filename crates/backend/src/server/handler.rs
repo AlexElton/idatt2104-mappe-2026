@@ -110,6 +110,9 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 ClientMsg::Presence { presence } => {
                     registry.update_presence(connection_id, presence).await;
                 }
+                ClientMsg::GarbageCollect => {
+                    registry.garbage_collect(connection_id).await;
+                }
             }
         }
     });

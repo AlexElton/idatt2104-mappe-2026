@@ -1,6 +1,6 @@
 import type { Op } from "rga-core";
 
-export type { ApplyOutcome, Op, OperationId } from "rga-core";
+export type { ApplyOutcome, Op, OperationId, RgaTree, RgaTreeNode } from "rga-core";
 
 export const PEER_COLORS = ["#4ec9b0", "#ce9178", "#dcdcaa", "#9cdcfe", "#c586c0", "#f44747"];
 
@@ -27,7 +27,11 @@ export type ClientPresenceMsg = {
   presence: Presence;
 };
 
-export type ClientMsg = HelloMsg | ClientOpsMsg | ClientPresenceMsg;
+export type ClientGarbageCollectMsg = {
+  type: "garbage_collect";
+};
+
+export type ClientMsg = HelloMsg | ClientOpsMsg | ClientPresenceMsg | ClientGarbageCollectMsg;
 
 export type HydrateMsg = {
   type: "hydrate";
@@ -47,7 +51,12 @@ export type PresenceStateMsg = {
   clients: number;
 };
 
-export type ServerMsg = HydrateMsg | RemoteOpsMsg | PresenceStateMsg;
+export type GarbageCollectMsg = {
+  type: "garbage_collect";
+  removed: number;
+};
+
+export type ServerMsg = HydrateMsg | RemoteOpsMsg | PresenceStateMsg | GarbageCollectMsg;
 
 export type Peer = {
   replicaId: string;

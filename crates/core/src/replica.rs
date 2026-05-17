@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::{ApplyOutcome, NodeId, Op, OperationId, ReplicaId, Rga, RgaError, SessionId};
+use crate::{ApplyOutcome, NodeId, Op, OperationId, ReplicaId, Rga, RgaError, RgaTree, SessionId};
 
 #[derive(Debug, Clone)]
 pub struct Replica {
@@ -104,6 +104,28 @@ impl Replica {
 
     pub fn hydration_ops(&self) -> Vec<Op> {
         self.op_log.clone()
+    }
+
+    pub fn rga_tree(&self) -> RgaTree {
+        self.rga.tree()
+    }
+
+    pub fn clear_deleted_nodes(&mut self) -> usize {
+        let removed = self.rga.clear_tombstones();
+        if removed > 0 {
+            self.op_log = self
+                .rga
+                .tree()
+                .nodes
+                .into_iter()
+                .map(|node| Op::Insert {
+                    left: node.left,
+                    value: node.value,
+                    id: node.id,
+                })
+                .collect();
+        }
+        removed
     }
 
     pub fn has_node(&self, id: &NodeId) -> bool {
@@ -256,5 +278,35 @@ mod tests {
 
         assert_eq!(a.text(), b.text());
         assert_eq!(a.text(), "xb");
+    }
+
+    #[test]
+    fn rga_tree_reflects_applied_ops() {
+        let mut replica = replica("a");
+        replica.local_insert(0, 'a').unwrap();
+        replica.local_insert(1, 'b').unwrap();
+        replica.local_delete(0).unwrap();
+
+        let tree = replica.rga_tree();
+
+        assert_eq!(tree.text, "b");
+        assert_eq!(tree.nodes.len(), 2);
+        assert!(tree.nodes[0].tombstone);
+        assert_eq!(tree.nodes[1].value, 'b');
+    }
+
+    #[test]
+    fn clear_deleted_nodes_prunes_tombstones() {
+        let mut replica = replica("a");
+        replica.local_insert(0, 'a').unwrap();
+        replica.local_insert(1, 'b').unwrap();
+        replica.local_delete(0).unwrap();
+
+        let removed = replica.clear_deleted_nodes();
+
+        assert_eq!(removed, 1);
+        assert_eq!(replica.text(), "b");
+        assert_eq!(replica.rga_tree().nodes.len(), 1);
+        assert_eq!(replica.hydration_ops().len(), 1);
     }
 }

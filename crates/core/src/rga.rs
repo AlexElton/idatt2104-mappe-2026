@@ -1,6 +1,26 @@
 use std::collections::HashMap;
 
+use serde::Serialize;
+
 use crate::{node::Node, NodeId, OperationId};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RgaTree {
+    pub text: String,
+    pub nodes: Vec<RgaTreeNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RgaTreeNode {
+    pub index: usize,
+    pub visible_index: Option<usize>,
+    pub value: char,
+    pub tombstone: bool,
+    pub id: NodeId,
+    pub left: Option<NodeId>,
+    pub next: Option<NodeId>,
+    pub deleted_by: Option<OperationId>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RgaError {
@@ -35,10 +55,10 @@ impl Rga {
             return Err(RgaError::DuplicateNode);
         }
 
-        let left_idx = match left {
+        let left_idx = match left.as_ref() {
             Some(left_id) => Some(
                 self.hash
-                    .get(&left_id)
+                    .get(left_id)
                     .copied()
                     .ok_or(RgaError::MissingDependency)?,
             ),
@@ -46,7 +66,7 @@ impl Rga {
         };
 
         let new_idx = self.nodes.len();
-        self.nodes.push(Node::new(value, id.clone()));
+        self.nodes.push(Node::new(value, left.clone(), id.clone()));
         self.hash.insert(id.clone(), new_idx);
 
         let mut prev = left_idx;
@@ -123,6 +143,100 @@ impl Rga {
     pub fn text(&self) -> String {
         self.to_string()
     }
+
+    pub fn tree(&self) -> RgaTree {
+        let mut visible_indices = HashMap::new();
+        let mut visible_index = 0;
+        let mut cur = self.head;
+
+        while let Some(idx) = cur {
+            if !self.nodes[idx].is_tombstone() {
+                visible_indices.insert(idx, visible_index);
+                visible_index += 1;
+            }
+            cur = self.nodes[idx].link;
+        }
+
+        let nodes = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| RgaTreeNode {
+                index,
+                visible_index: visible_indices.get(&index).copied(),
+                value: node.value,
+                tombstone: node.tombstone,
+                id: node.id.clone(),
+                left: node.left.clone(),
+                next: node
+                    .link
+                    .and_then(|next_idx| self.nodes.get(next_idx))
+                    .map(|next| next.id.clone()),
+                deleted_by: node.deleted_by.clone(),
+            })
+            .collect();
+
+        RgaTree {
+            text: self.text(),
+            nodes,
+        }
+    }
+
+    pub fn clear_tombstones(&mut self) -> usize {
+        let removed_lefts: HashMap<NodeId, Option<NodeId>> = self
+            .nodes
+            .iter()
+            .filter(|node| node.tombstone)
+            .map(|node| (node.id.clone(), node.left.clone()))
+            .collect();
+
+        if removed_lefts.is_empty() {
+            return 0;
+        }
+
+        let mut live_order = Vec::new();
+        let mut cur = self.head;
+        while let Some(idx) = cur {
+            if !self.nodes[idx].tombstone {
+                live_order.push(idx);
+            }
+            cur = self.nodes[idx].link;
+        }
+
+        let mut nodes = Vec::with_capacity(live_order.len());
+        let mut hash = HashMap::with_capacity(live_order.len());
+
+        for old_idx in live_order {
+            let mut node = self.nodes[old_idx].clone();
+            node.left = live_left(node.left, &removed_lefts);
+            node.link = None;
+            hash.insert(node.id.clone(), nodes.len());
+            nodes.push(node);
+        }
+
+        for idx in 0..nodes.len() {
+            nodes[idx].link = (idx + 1 < nodes.len()).then_some(idx + 1);
+        }
+
+        let removed = removed_lefts.len();
+        self.head = (!nodes.is_empty()).then_some(0);
+        self.nodes = nodes;
+        self.hash = hash;
+        removed
+    }
+}
+
+fn live_left(
+    mut left: Option<NodeId>,
+    removed_lefts: &HashMap<NodeId, Option<NodeId>>,
+) -> Option<NodeId> {
+    while let Some(id) = left.as_ref() {
+        let Some(next_left) = removed_lefts.get(id) else {
+            break;
+        };
+        left = next_left.clone();
+    }
+    left
 }
 
 impl std::fmt::Display for Rga {
@@ -211,5 +325,49 @@ mod tests {
         let mut rga = Rga::new();
         let result = rga.insert(Some(id("missing", 1)), 'a', id("a", 1));
         assert_eq!(result, Err(RgaError::MissingDependency));
+    }
+
+    #[test]
+    fn tree_exposes_anchor_and_link_order() {
+        let mut rga = Rga::new();
+        let a = id("a", 1);
+        let b = id("b", 1);
+        rga.insert(None, 'a', a.clone()).unwrap();
+        rga.insert(Some(a.clone()), 'b', b.clone()).unwrap();
+        rga.delete(a.clone(), id("a", 2)).unwrap();
+
+        let tree = rga.tree();
+
+        assert_eq!(tree.text, "b");
+        assert_eq!(tree.nodes.len(), 2);
+        assert_eq!(tree.nodes[0].left, None);
+        assert_eq!(tree.nodes[0].next, Some(b.clone()));
+        assert!(tree.nodes[0].tombstone);
+        assert_eq!(tree.nodes[0].visible_index, None);
+        assert_eq!(tree.nodes[1].left, Some(a));
+        assert_eq!(tree.nodes[1].visible_index, Some(0));
+    }
+
+    #[test]
+    fn clear_tombstones_removes_deleted_nodes_and_preserves_text() {
+        let mut rga = Rga::new();
+        let a = id("a", 1);
+        let b = id("a", 2);
+        let x = id("b", 3);
+        rga.insert(None, 'a', a.clone()).unwrap();
+        rga.insert(Some(a.clone()), 'b', b.clone()).unwrap();
+        rga.delete(a.clone(), id("a", 3)).unwrap();
+        rga.insert(Some(a), 'x', x.clone()).unwrap();
+
+        let removed = rga.clear_tombstones();
+        let tree = rga.tree();
+
+        assert_eq!(removed, 1);
+        assert_eq!(tree.text, "xb");
+        assert_eq!(tree.nodes.len(), 2);
+        assert_eq!(tree.nodes[0].id, x);
+        assert_eq!(tree.nodes[0].left, None);
+        assert_eq!(tree.nodes[0].next, Some(b.clone()));
+        assert_eq!(tree.nodes[1].id, b);
     }
 }

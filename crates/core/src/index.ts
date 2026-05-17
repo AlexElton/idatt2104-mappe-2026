@@ -22,6 +22,22 @@ export type Op =
 
 export type ApplyOutcome = "applied" | "duplicate" | "missing_dependency" | "invalid";
 
+export type RgaTreeNode = {
+  index: number;
+  visible_index: number | null;
+  value: string;
+  tombstone: boolean;
+  id: OperationId;
+  left: OperationId | null;
+  next: OperationId | null;
+  deleted_by: OperationId | null;
+};
+
+export type RgaTree = {
+  text: string;
+  nodes: RgaTreeNode[];
+};
+
 type RawReplicaApi = {
   localInsert(pos: number, value: string): unknown;
   localDelete(pos: number): unknown;
@@ -29,6 +45,8 @@ type RawReplicaApi = {
   applyRemoteBatch(ops: Op[]): ApplyOutcome[];
   text(): string;
   hydrationOps(): Op[];
+  rgaTree(): RgaTree;
+  clearDeletedNodes(): number;
 };
 
 export class Replica {
@@ -60,6 +78,14 @@ export class Replica {
 
   hydrationOps(): Op[] {
     return this.inner.hydrationOps();
+  }
+
+  rgaTree(): RgaTree {
+    return this.inner.rgaTree();
+  }
+
+  clearDeletedNodes(): number {
+    return this.inner.clearDeletedNodes();
   }
 }
 

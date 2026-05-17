@@ -1,26 +1,47 @@
+import { collaborationController } from "../collaboration/collaborationController";
 import { useCollaborationStore } from "../stores/collaborationStore";
 
 export function ControlBar() {
-  const syncIntervalMs = useCollaborationStore((state) => state.syncIntervalMs);
-  const countdownMs = useCollaborationStore((state) => state.countdownMs);
-  const setSyncIntervalMs = useCollaborationStore((state) => state.setSyncIntervalMs);
+  const syncEnabled = useCollaborationStore((state) => state.syncEnabled);
+  const pendingOpsCount = useCollaborationStore((state) => state.pendingOpsCount);
+  const bufferedRemoteOpsCount = useCollaborationStore((state) => state.bufferedRemoteOpsCount);
+  const deletedNodeCount = useCollaborationStore(
+    (state) => state.rgaTree.nodes.filter((node) => node.tombstone).length,
+  );
+  const setSyncEnabled = useCollaborationStore((state) => state.setSyncEnabled);
+  const queuedCount = pendingOpsCount + bufferedRemoteOpsCount;
 
   return (
     <footer className="flex flex-col gap-4 border-t p-5 text-sm md:flex-row md:items-center md:justify-between">
-      <label className="grid min-w-0 grid-cols-[1fr_auto] items-center gap-3 md:grid-cols-[auto_auto_minmax(180px,320px)]">
-        <span>Sync interval</span>
-        <strong>{syncIntervalMs}ms</strong>
+      <label className="flex items-center gap-3">
         <input
-          className="col-span-2 w-full md:col-span-1"
-          type="range"
-          min="100"
-          max="5000"
-          step="100"
-          value={syncIntervalMs}
-          onChange={(event) => setSyncIntervalMs(Number(event.currentTarget.value))}
+          className="peer sr-only"
+          type="checkbox"
+          role="switch"
+          checked={syncEnabled}
+          onChange={(event) => setSyncEnabled(event.currentTarget.checked)}
         />
+        <span
+          className="relative h-6 w-11 border transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:border after:bg-current after:transition-transform peer-checked:after:translate-x-5"
+          aria-hidden="true"
+        />
+        <span>Sync</span>
+        <strong>{syncEnabled ? "on" : "off"}</strong>
       </label>
-      <div>Next sync: {(countdownMs / 1000).toFixed(1)}s</div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <span>Queued local: {pendingOpsCount}</span>
+        <span>Buffered remote: {bufferedRemoteOpsCount}</span>
+        <strong>{queuedCount === 0 ? "Up to date" : `${queuedCount} waiting`}</strong>
+        <button
+          className="border px-3 py-1 font-semibold disabled:opacity-50"
+          type="button"
+          disabled={deletedNodeCount === 0}
+          onClick={() => collaborationController.garbageCollectTombstones()}
+        >
+          Clear deleted ({deletedNodeCount})
+        </button>
+      </div>
     </footer>
   );
 }

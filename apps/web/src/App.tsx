@@ -3,6 +3,7 @@ import { collaborationController } from "./collaboration/collaborationController
 import { ControlBar } from "./components/ControlBar";
 import { EditorPane } from "./components/EditorPane";
 import { PeersPanel } from "./components/PeersPanel";
+import { RgaTreePanel } from "./components/RgaTreePanel";
 import { StatusStrip } from "./components/StatusStrip";
 
 export function App() {
@@ -28,6 +29,10 @@ export function App() {
       </section>
 
       <PeersPanel />
+
+      <div className="md:col-span-2">
+        <RgaTreePanel />
+      </div>
     </main>
   );
 }
