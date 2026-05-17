@@ -76,6 +76,16 @@ impl WasmReplica {
     pub fn hydration_ops(&self) -> JsValue {
         to_js(&self.inner.hydration_ops())
     }
+
+    #[wasm_bindgen(js_name = rgaTree)]
+    pub fn rga_tree(&self) -> JsValue {
+        to_js(&self.inner.rga_tree())
+    }
+
+    #[wasm_bindgen(js_name = clearDeletedNodes)]
+    pub fn clear_deleted_nodes(&mut self) -> usize {
+        self.inner.clear_deleted_nodes()
+    }
 }
 
 fn to_js<T: Serialize>(value: &T) -> JsValue {

@@ -1,20 +1,22 @@
 import { create } from "zustand";
-import type { ConnectionStatus, Presence } from "../collaboration/types";
+import type { ConnectionStatus, Presence, RgaTree } from "../collaboration/types";
 
 type CollaborationState = {
   replicaId: string | null;
   clientCount: number;
   presence: Record<string, Presence>;
-  syncIntervalMs: number;
-  countdownMs: number;
+  syncEnabled: boolean;
+  pendingOpsCount: number;
+  bufferedRemoteOpsCount: number;
   connection: ConnectionStatus;
   documentText: string;
+  rgaTree: RgaTree;
   setConnection: (connection: ConnectionStatus) => void;
   setReplicaId: (replicaId: string) => void;
-  setSyncIntervalMs: (syncIntervalMs: number) => void;
-  setCountdownMs: (countdownMs: number) => void;
-  tickCountdown: (deltaMs: number) => void;
+  setSyncEnabled: (syncEnabled: boolean) => void;
+  setQueueCounts: (pendingOpsCount: number, bufferedRemoteOpsCount: number) => void;
   setDocumentText: (documentText: string) => void;
+  setRgaTree: (rgaTree: RgaTree) => void;
   setPresenceState: (presence: Record<string, Presence>, clientCount: number) => void;
 };
 
@@ -22,16 +24,18 @@ export const useCollaborationStore = create<CollaborationState>((set) => ({
   replicaId: null,
   clientCount: 0,
   presence: {},
-  syncIntervalMs: 1000,
-  countdownMs: 1000,
+  syncEnabled: true,
+  pendingOpsCount: 0,
+  bufferedRemoteOpsCount: 0,
   connection: "connecting",
   documentText: "",
+  rgaTree: { text: "", nodes: [] },
   setConnection: (connection) => set({ connection }),
   setReplicaId: (replicaId) => set({ replicaId }),
-  setSyncIntervalMs: (syncIntervalMs) => set({ syncIntervalMs, countdownMs: syncIntervalMs }),
-  setCountdownMs: (countdownMs) => set({ countdownMs }),
-  tickCountdown: (deltaMs) =>
-    set((state) => ({ countdownMs: Math.max(0, state.countdownMs - deltaMs) })),
+  setSyncEnabled: (syncEnabled) => set({ syncEnabled }),
+  setQueueCounts: (pendingOpsCount, bufferedRemoteOpsCount) =>
+    set({ pendingOpsCount, bufferedRemoteOpsCount }),
   setDocumentText: (documentText) => set({ documentText }),
+  setRgaTree: (rgaTree) => set({ rgaTree }),
   setPresenceState: (presence, clientCount) => set({ presence, clientCount }),
 }));

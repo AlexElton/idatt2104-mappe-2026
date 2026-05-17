@@ -5,16 +5,18 @@ use crate::{NodeId, OperationId};
 pub struct Node {
     pub value: char,
     pub tombstone: bool,
+    pub left: Option<NodeId>,
     pub id: NodeId,
     pub deleted_by: Option<OperationId>,
     pub link: Option<usize>,
 }
 
 impl Node {
-    pub fn new(value: char, id: NodeId) -> Self {
+    pub fn new(value: char, left: Option<NodeId>, id: NodeId) -> Self {
         Self {
             value,
             tombstone: false,
+            left,
             id,
             deleted_by: None,
             link: None,

@@ -30,6 +30,7 @@ pub enum ClientMsg {
     Presence {
         presence: Presence,
     },
+    GarbageCollect,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,6 +47,9 @@ pub enum ServerMsg {
     Presence {
         presence: HashMap<String, Presence>,
         clients: usize,
+    },
+    GarbageCollect {
+        removed: usize,
     },
 }
 
@@ -195,6 +199,26 @@ impl Registry {
         };
         broadcast(&session.clients, message, None);
     }
+
+    pub async fn garbage_collect(&self, from_connection: u64) {
+        let mut session = self.inner.write().await;
+        if !session.clients.contains_key(&from_connection) {
+            eprintln!(
+                "[WARN] garbage_collect for unknown connection {}",
+                from_connection
+            );
+            return;
+        }
+
+        let removed = session.replica.clear_deleted_nodes();
+        session.op_log = session.replica.hydration_ops();
+
+        broadcast(
+            &session.clients,
+            ServerMsg::GarbageCollect { removed },
+            Some(from_connection),
+        );
+    }
 }
 
 impl Default for Registry {
@@ -297,5 +321,33 @@ mod tests {
         };
         assert_eq!(clients, 1);
         assert!(!presence.contains_key("a"));
+    }
+
+    #[tokio::test]
+    async fn garbage_collect_rewrites_hydration_log_and_broadcasts() {
+        let registry = Registry::new();
+        let (_rx1, _) = registry.connect(1).await;
+        let (mut rx2, _) = registry.connect(2).await;
+        let mut source = replica("a");
+        let insert_a = source.local_insert(0, 'a').unwrap();
+        let insert_b = source.local_insert(1, 'b').unwrap();
+        let delete_a = source.local_delete(0).unwrap();
+
+        registry
+            .process_ops(1, vec![insert_a, insert_b, delete_a])
+            .await;
+        let _ = rx2.try_recv().unwrap();
+
+        registry.garbage_collect(1).await;
+
+        assert!(matches!(
+            rx2.try_recv().unwrap(),
+            ServerMsg::GarbageCollect { removed: 1 }
+        ));
+        let (_rx3, hydrate) = registry.connect(3).await;
+        let ServerMsg::Hydrate { ops, .. } = hydrate else {
+            panic!("expected hydrate");
+        };
+        assert_eq!(ops.len(), 1);
     }
 }
