@@ -14,15 +14,9 @@ apps/*/dist/
 # Debug info (Windows)
 *.pdb
 
-# Editor / AI config (local only)
-CLAUDE.md
-.claude/
 .idea/
 
 # Cargo.lock — keep for binary crates, ignored here per project preference
 Cargo.lock
-
-# Superpowers brainstorm sessions (local only)
-.superpowers/
 
 /.playwright-mcp

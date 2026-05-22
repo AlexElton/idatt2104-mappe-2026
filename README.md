@@ -1,9 +1,5 @@
 # Nettverk – RGA Collaborative Editor
 
-[![CI](https://github.com/AlexElton/idatt2104-mappe-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/AlexElton/idatt2104-mappe-2026/actions/workflows/ci.yml)
-
-Siste CI-kjøring: <https://github.com/AlexElton/idatt2104-mappe-2026/actions/workflows/ci.yml>
-
 ## Introduksjon
 
 Nettverk er en proof-of-concept kollaborativ teksteditor bygget på **Replicated Growable Array (RGA)** CRDT i Rust. Løsningen viser flere klienter som kan redigere samme dokument samtidig og slå det sammen til en tekst uten Operational Transformation eller låsing.
@@ -70,8 +66,6 @@ Forutsetninger:
 - `bacon` hvis du vil bruke `pnpm dev:backend`/`pnpm dev`
 
 ```bash
-git clone https://github.com/AlexElton/idatt2104-mappe-2026.git
-cd idatt2104-mappe-2026
 cargo install wasm-pack --locked
 cargo install bacon --locked
 pnpm install
