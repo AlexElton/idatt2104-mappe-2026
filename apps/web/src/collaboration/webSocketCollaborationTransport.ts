@@ -1,8 +1,4 @@
-import {
-  ClientMsgSchema,
-  ServerMsgSchema,
-  type ClientMsg,
-} from "./protocolSchemas";
+import { ClientMsgSchema, ServerMsgSchema, type ClientMsg } from "./protocolSchemas";
 import type {
   CollaborationTransport,
   CollaborationTransportHandlers,
