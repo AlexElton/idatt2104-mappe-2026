@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import type { ConnectionStatus, Presence, RgaTree } from "../collaboration/types";
+import type { Presence } from "../collaboration/protocolSchemas";
+import type { ConnectionStatus, RgaTree } from "../collaboration/types";
 
 type CollaborationState = {
   replicaId: string | null;

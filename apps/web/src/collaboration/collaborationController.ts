@@ -9,8 +9,14 @@ import {
 } from "@codemirror/view";
 import { Replica } from "rga-core";
 import { useCollaborationStore } from "../stores/collaborationStore";
-import { SocketClient } from "./socketClient";
-import { colorForReplica, type ApplyOutcome, type Op, type Peer, type ServerMsg } from "./types";
+import type {
+  CollaborationTransport,
+  CreateCollaborationTransport,
+  TransportSendResult,
+} from "./collaborationTransport";
+import type { Op, ServerMsg } from "./protocolSchemas";
+import { colorForReplica, type ApplyOutcome, type Peer } from "./types";
+import { WebSocketCollaborationTransport } from "./webSocketCollaborationTransport";
 
 const remoteSyncAnnotation = Annotation.define<boolean>();
 const setPeerCursors = StateEffect.define<Peer[]>();
@@ -57,8 +63,8 @@ class CursorWidget extends WidgetType {
   }
 }
 
-class CollaborationController {
-  private readonly socket: SocketClient;
+export class CollaborationController {
+  private readonly transport: CollaborationTransport;
   private readonly replicaId = getOrCreateReplicaId();
   private readonly sessionId = createRuntimeId();
   private replica = new Replica(this.replicaId, this.sessionId);
@@ -66,15 +72,14 @@ class CollaborationController {
   private editorView: EditorView | null = null;
   private outboundOps: Op[] = [];
   private bufferedRemoteOps: Op[] = [];
-  private reconnectTimer: number | null = null;
   private stopped = true;
   private lastSyncEnabled = useCollaborationStore.getState().syncEnabled;
   private unsubscribeStore: (() => void) | null = null;
 
-  constructor() {
+  constructor(createTransport: CreateCollaborationTransport) {
     useCollaborationStore.getState().setReplicaId(this.replicaId);
     this.syncRgaTree();
-    this.socket = new SocketClient({
+    this.transport = createTransport({
       onConnectionChange: (connection) => {
         useCollaborationStore.getState().setConnection(connection);
         if (connection === "connected") {
@@ -83,7 +88,6 @@ class CollaborationController {
         }
       },
       onMessage: (message) => this.receive(message),
-      onClose: () => this.scheduleReconnect(),
     });
   }
 
@@ -100,15 +104,14 @@ class CollaborationController {
       }
     });
 
-    this.connect();
+    this.transport.connect();
   }
 
   stop() {
     this.stopped = true;
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
-    this.clearReconnect();
-    this.socket.disconnect();
+    this.transport.disconnect();
   }
 
   attachEditor(host: HTMLElement | null) {
@@ -137,35 +140,22 @@ class CollaborationController {
     this.refreshPeerCursors();
   }
 
-  private connect() {
-    this.clearReconnect();
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    this.socket.connect(`${proto}://${location.host}/ws`);
-  }
-
   private sendHello() {
-    this.socket.send({
-      type: "hello",
-      replica_id: this.replicaId,
-      session_id: this.sessionId,
-    });
-  }
-
-  private scheduleReconnect() {
-    if (this.stopped) return;
-    this.clearReconnect();
-    this.reconnectTimer = window.setTimeout(() => this.connect(), 2000);
+    this.warnSendFailure(
+      this.transport.send({
+        type: "hello",
+        replica_id: this.replicaId,
+        session_id: this.sessionId,
+      }),
+      "hello message",
+    );
   }
 
   private flushIfSyncEnabled() {
     if (!this.isSyncEnabled()) return;
 
     const ops = this.outboundOps.splice(0);
-    if (ops.length > 0 && this.socket.isOpen) {
-      this.socket.send({ type: "ops", ops });
-    } else {
-      this.outboundOps.unshift(...ops);
-    }
+    this.sendOpsOrRequeue(ops);
 
     if (this.bufferedRemoteOps.length > 0) {
       const outcomes = this.replica.applyRemoteBatch(this.bufferedRemoteOps.splice(0));
@@ -217,8 +207,11 @@ class CollaborationController {
 
   garbageCollectTombstones() {
     this.applyForcedGarbageCollection();
-    if (this.socket.isOpen) {
-      this.socket.send({ type: "garbage_collect" });
+    if (this.transport.isOpen) {
+      this.warnSendFailure(
+        this.transport.send({ type: "garbage_collect" }),
+        "garbage collect request",
+      );
     }
   }
 
@@ -334,18 +327,42 @@ class CollaborationController {
   }
 
   private sendPresence() {
-    if (!this.socket.isOpen || !this.isSyncEnabled()) return;
+    if (!this.transport.isOpen || !this.isSyncEnabled()) return;
 
     const cursor = this.currentCursor();
     if (cursor === null) return;
 
-    this.socket.send({
-      type: "presence",
-      presence: {
-        replica_id: this.replicaId,
-        cursor,
-      },
-    });
+    this.warnSendFailure(
+      this.transport.send({
+        type: "presence",
+        presence: {
+          replica_id: this.replicaId,
+          cursor,
+        },
+      }),
+      "presence update",
+    );
+  }
+
+  private sendOpsOrRequeue(ops: Op[]) {
+    if (ops.length === 0) return;
+
+    const result = this.transport.send({ type: "ops", ops });
+    if (result.ok) return;
+
+    if (result.reason !== "not_connected") {
+      console.warn("Failed to send operation.", result.message);
+    }
+
+    if (result.reason !== "invalid_message") {
+      this.outboundOps.unshift(...ops);
+    }
+  }
+
+  private warnSendFailure(result: TransportSendResult, description: string) {
+    if (result.ok || result.reason === "not_connected") return;
+
+    console.warn(`Failed to send message ${description}.`, result.message);
   }
 
   private isSyncEnabled(): boolean {
@@ -372,13 +389,6 @@ class CollaborationController {
   private applyForcedGarbageCollection() {
     this.replica.clearDeletedNodes();
     this.patchEditorText(this.replica.text());
-  }
-
-  private clearReconnect() {
-    if (this.reconnectTimer !== null) {
-      window.clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
   }
 }
 
@@ -440,4 +450,6 @@ function createRuntimeId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-export const collaborationController = new CollaborationController();
+export const collaborationController = new CollaborationController(
+  (handlers) => new WebSocketCollaborationTransport(handlers),
+);

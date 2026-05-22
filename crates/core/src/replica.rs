@@ -34,21 +34,12 @@ impl Replica {
 
         let id = self.next_id();
         let op = Op::Insert {
-            left,
+            left: left.clone(),
             value,
             id: id.clone(),
         };
 
-        self.rga
-            .insert(
-                match &op {
-                    Op::Insert { left, .. } => left.clone(),
-                    Op::Delete { .. } => unreachable!(),
-                },
-                value,
-                id.clone(),
-            )
-            .ok()?;
+        self.rga.insert(left, value, id).ok()?;
         self.mark_applied(op.clone());
         Some(op)
     }

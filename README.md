@@ -1,8 +1,73 @@
-# Collaborative Editor
+# Nettverk – RGA Collaborative Editor
 
-## Installation
+[![CI](https://github.com/AlexElton/idatt2104-mappe-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/AlexElton/idatt2104-mappe-2026/actions/workflows/ci.yml)
 
-Requires Rust (stable, 2024 edition), pnpm, wasm-pack, and bacon. Install Rust via [rustup](https://rustup.rs/).
+Siste CI-kjøring: <https://github.com/AlexElton/idatt2104-mappe-2026/actions/workflows/ci.yml>
+
+## Introduksjon
+
+Nettverk er en proof-of-concept kollaborativ teksteditor bygget på **Replicated Growable Array (RGA)** CRDT i Rust. Løsningen viser flere klienter som kan redigere samme dokument samtidig og slå det sammen til en tekst uten Operational Transformation eller låsing.
+
+Arkitekturen er klient-server:
+
+CRDT-kjernen ligger i `crates/core` og kompileres både som vanlig Rust-bibliotek og som WebAssembly for frontend. Backend holder en in-memory dokumentøkt og broadcaster validerte operasjoner til tilkoblede klienter. Frontend bruker samme Rust-implementasjon gjennom WASM, slik at klientene selv kan anvende lokale og eksterne operasjoner.
+
+## Implementert funksjonalitet
+
+TODO: Skriv inn noe her
+
+## Fremtidig arbeid og kjente mangler
+
+- Dokumenttilstand lagres kun i minnet. Restart av backend sletter dokumentet.
+- Det finnes bare en global dokumentøkt.
+- Ingen autentisering, autorisasjon eller brukerprofiler.
+- Tombstone-garbage-collection er demonstrativ. I en produksjonsløsning må man vite at alle aktive/aktuelle replikaer har sett slettingene før tombstones fjernes.
+- Presence er begrenset til markørposisjon, ikke full selection/ranges eller brukeridentitet.
+- Kun WebSocket-transport er implementert. WebRTC eller annen transport kan legges til via `CollaborationTransport`.
+
+## Eksterne avhengigheter
+
+### Rust/backend
+
+- `tokio` – async runtime for backend.
+- `axum` – HTTP-server, routing og WebSocket upgrade.
+- `futures-util` – stream/sink-hjelpere for WebSocket-håndtering.
+- `serde` – serialisering/deserialisering av operasjoner og meldinger.
+- `serde_json` – JSON wire-format over WebSocket.
+- `wasm-bindgen` – eksponerer Rust-kjernen til JavaScript/WASM.
+- `serde-wasm-bindgen` – konverterer Rust/Serde-verdier til JavaScript-verdier.
+- `console_error_panic_hook` – bedre panic-feilmeldinger i browser console for WASM.
+
+### Frontend
+
+- `react` og `react-dom` – UI-rammeverk.
+- `@codemirror/state` og `@codemirror/view` – teksteditor, editor-state og cursor widgets.
+- `zustand` – enkel klient-side state store.
+- `zod` – runtime-validering av collaboration-protokollmeldinger.
+- `rga-core` – workspace-pakken som peker på prosjektets egen Rust/WASM CRDT-kjerne.
+
+### Verktøy
+
+- `pnpm` – package manager.
+- `nx` – kjører frontend/backend/wasm targets i monorepoet.
+- `vite` – frontend dev server og bundling.
+- `@vitejs/plugin-react` – React-støtte i Vite.
+- `vite-plugin-wasm` og `vite-plugin-wasm-hmr` – lasting og hot reload av WASM-kjernen.
+- `tailwindcss` og `@tailwindcss/vite` – styling.
+- `wasm-pack` – bygger Rust-kjernen til WebAssembly.
+- `bacon` – restartende Rust dev-runner for backend.
+- `oxlint` og `oxfmt` – JavaScript/TypeScript linting og formattering.
+- `cargo clippy` og `cargo fmt` – Rust linting og formattering.
+
+## Installasjon
+
+Forutsetninger:
+
+- Rust stable med Cargo: <https://rustup.rs/>
+- Node.js 22 eller nyere
+- pnpm 10.x
+- `wasm-pack`
+- `bacon` hvis du vil bruke `pnpm dev:backend`/`pnpm dev`
 
 ```bash
 git clone https://github.com/AlexElton/idatt2104-mappe-2026.git
@@ -12,75 +77,84 @@ cargo install bacon --locked
 pnpm install
 ```
 
-## Usage
+## Bruk
 
-Start the backend and React/Vite frontend:
+Start backend, bygg WASM i dev-modus og start frontend:
 
 ```bash
 pnpm dev
 ```
 
-Nx runs the backend and web dev targets in parallel. The backend target uses `bacon backend`, while the frontend keeps Vite's WebAssembly HMR plugin for `crates/core`.
+Backend lytter på <http://localhost:3000>. Vite viser frontend-URL-en i terminalen, normalt <http://localhost:5173>. Frontend proxier `/api` og `/ws` til backend.
 
-You can also run either side directly:
+Du kan også starte delene hver for seg:
 
 ```bash
 pnpm dev:backend
 pnpm dev:web
 ```
 
-## Production Builds
+### Demo av CRDT-konvergens
+
+1. Start appen med `pnpm dev`.
+2. Åpne frontend i forskjellige nettlesere eller bruk incognito-modues (userid lagres i localstorage).
+3. Skriv tekst i begge vinduer og observer at dokumentene synkroniseres.
+4. Skru av `Sync` i en fane.
+5. Skriv videre i begge faner. Lokale og eksterne operasjoner blir buffered.
+6. Skru `Sync` på igjen. Fanene skal konvergere til samme tekst.
+7. Slett noen tegn og se tombstones i `RGA Tree`-panelet.
+8. Trykk `Clear deleted` for å demonstrere tombstone-opprydding. (Dette kan forårsake noen feil da en korrekt implementasjon av GC ikke er implementert.)
+
+## Bygg
 
 ```bash
 pnpm build:web
 pnpm build:backend
 ```
 
-`pnpm build:web` runs the Nx `rga-core:build-release` target before building the SPA into `apps/web/dist/`. `pnpm build:backend` runs the Nx backend release target.
-
-## Introduction
-
-A browser-based collaborative text editor backed by a **Replicated Growable Array (RGA)** CRDT implemented from scratch in Rust.
-
-Traditional collaborative editors use Operational Transformation (OT), which requires a central server to serialize and transform concurrent operations. RGA instead uses _tombstone-based conflict-free replication_: each character carries a globally unique **S4Vector** identifier `⟨ssn, sid, sum, seq⟩` (Definition 9 in Roh et al. 2011). Concurrent inserts at the same position are resolved deterministically by comparing S4Vectors — no locking, no transformation functions, no central arbiter.
-
-**Properties guaranteed by the RGA algorithm:**
-
-- **Operation Commutativity (OC):** applying any two ops in either order produces the same result.
-- **Precedence Transitivity (PT):** the insertion ordering is globally consistent across all sites.
-
-Together these guarantee **eventual consistency** — after all pending ops are delivered, every site converges to the same document.
-
-## Demo the app
-
-Open the Vite URL printed by the web dev target in two or more browser tabs.
-
-**Demonstrating convergence with a simulated network partition:**
-
-1. Open two tabs.
-2. Set one tab's sync interval slider to 3000 ms.
-3. Type in both tabs simultaneously.
-4. Observe that the high-interval tab lags behind.
-5. After 3 seconds both tabs display the same merged text — this is the CRDT convergence property in action.
-
-## Running Tests
+Eller bygg alt:
 
 ```bash
-cargo test
+pnpm build
 ```
 
-Unit tests are in `src/crdt/rga.rs` (module `tests`). They verify:
+`pnpm build:web` bygger først `rga-core` til WASM og bygger deretter React-appen til `apps/web/dist/`. `pnpm build:backend` bygger Rust-backend i release-modus.
 
-- Single and sequential inserts
-- Concurrent inserts at the same position (dOPT puzzle — Example 1 from the paper)
-- Delete followed by a concurrent insert (Example 2 from the paper)
-- Convergence when ops are applied in opposite orders (OC property)
-- Delete-wins over a concurrent Update (Algorithm 10)
+## Tester og kvalitetssjekker
 
-## Attribution
+Rust-tester:
 
-All RGA algorithms are taken directly from:
+```bash
+cargo test --workspace
+```
 
-> Roh, H. G., Jeon, M., Kim, J. S., & Lee, J. (2011).
-> _Replicated abstract data types: Building blocks for collaborative applications._
-> Journal of Parallel and Distributed Computing, 71(3), 354–368.
+TypeScript typecheck:
+
+```bash
+pnpm --filter web exec tsc --noEmit
+```
+
+Lint og format check:
+
+```bash
+pnpm lint
+pnpm format:check
+```
+
+CI kjører installasjon, lint, format check og build på push/pull request mot `main`.
+
+## API og protokoll
+
+Wire-protokollen er JSON over WebSocket. Klienten sender:
+
+- `hello` – registrerer `replica_id` og `session_id`
+- `ops` – sender en liste CRDT-operasjoner
+- `presence` – sender markørposisjon
+- `garbage_collect` – ber andre klienter rydde tombstones
+
+Serveren sender:
+
+- `hydrate` – initial operasjonslogg, presence og klientantall
+- `ops` – CRDT-operasjoner fra andre klienter
+- `presence` – samlet presence-state
+- `garbage_collect` – beskjed om tombstone-opprydding

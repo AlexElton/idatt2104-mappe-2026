@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use serde::Serialize;
 
@@ -29,14 +30,22 @@ pub enum RgaError {
     Invalid,
 }
 
-/// Replicated Growable Array linked-list storage and deterministic merge logic.
-///
-/// `Replica` owns operation identity, duplicate detection, and op history. `Rga`
-/// only stores nodes and applies already-identified insert/delete operations.
+impl fmt::Display for RgaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RgaError::DuplicateNode => f.write_str("duplicate node"),
+            RgaError::MissingDependency => f.write_str("missing dependency"),
+            RgaError::Invalid => f.write_str("invalid operation"),
+        }
+    }
+}
+
+impl std::error::Error for RgaError {}
+
 #[derive(Debug, Clone, Default)]
 pub struct Rga {
     nodes: Vec<Node>,
-    hash: HashMap<NodeId, usize>,
+    node_indices: HashMap<NodeId, usize>,
     head: Option<usize>,
 }
 
@@ -51,13 +60,13 @@ impl Rga {
         value: char,
         id: NodeId,
     ) -> Result<(), RgaError> {
-        if self.hash.contains_key(&id) {
+        if self.node_indices.contains_key(&id) {
             return Err(RgaError::DuplicateNode);
         }
 
         let left_idx = match left.as_ref() {
             Some(left_id) => Some(
-                self.hash
+                self.node_indices
                     .get(left_id)
                     .copied()
                     .ok_or(RgaError::MissingDependency)?,
@@ -67,7 +76,7 @@ impl Rga {
 
         let new_idx = self.nodes.len();
         self.nodes.push(Node::new(value, left.clone(), id.clone()));
-        self.hash.insert(id.clone(), new_idx);
+        self.node_indices.insert(id.clone(), new_idx);
 
         let mut prev = left_idx;
         let mut cur = match left_idx {
@@ -98,7 +107,7 @@ impl Rga {
         }
 
         let idx = self
-            .hash
+            .node_indices
             .get(&target)
             .copied()
             .ok_or(RgaError::MissingDependency)?;
@@ -109,7 +118,7 @@ impl Rga {
     }
 
     pub fn contains_node(&self, id: &NodeId) -> bool {
-        self.hash.contains_key(id)
+        self.node_indices.contains_key(id)
     }
 
     pub fn left_id_for_insert(&self, pos: usize) -> Option<NodeId> {
@@ -117,7 +126,7 @@ impl Rga {
     }
 
     pub fn target_id_for_delete(&self, pos: usize) -> Option<NodeId> {
-        self.find_visible(pos + 1)
+        self.find_visible(pos.checked_add(1)?)
             .map(|idx| self.nodes[idx].id.clone())
     }
 
@@ -145,13 +154,13 @@ impl Rga {
     }
 
     pub fn tree(&self) -> RgaTree {
-        let mut visible_indices = HashMap::new();
+        let mut visible_indices = vec![None; self.nodes.len()];
         let mut visible_index = 0;
         let mut cur = self.head;
 
         while let Some(idx) = cur {
             if !self.nodes[idx].is_tombstone() {
-                visible_indices.insert(idx, visible_index);
+                visible_indices[idx] = Some(visible_index);
                 visible_index += 1;
             }
             cur = self.nodes[idx].link;
@@ -163,7 +172,7 @@ impl Rga {
             .enumerate()
             .map(|(index, node)| RgaTreeNode {
                 index,
-                visible_index: visible_indices.get(&index).copied(),
+                visible_index: visible_indices[index],
                 value: node.value,
                 tombstone: node.tombstone,
                 id: node.id.clone(),
@@ -204,24 +213,25 @@ impl Rga {
         }
 
         let mut nodes = Vec::with_capacity(live_order.len());
-        let mut hash = HashMap::with_capacity(live_order.len());
+        let mut node_indices = HashMap::with_capacity(live_order.len());
 
         for old_idx in live_order {
             let mut node = self.nodes[old_idx].clone();
             node.left = live_left(node.left, &removed_lefts);
             node.link = None;
-            hash.insert(node.id.clone(), nodes.len());
+            node_indices.insert(node.id.clone(), nodes.len());
             nodes.push(node);
         }
 
-        for idx in 0..nodes.len() {
-            nodes[idx].link = (idx + 1 < nodes.len()).then_some(idx + 1);
+        let len = nodes.len();
+        for (idx, node) in nodes.iter_mut().enumerate() {
+            node.link = (idx + 1 < len).then_some(idx + 1);
         }
 
         let removed = removed_lefts.len();
         self.head = (!nodes.is_empty()).then_some(0);
         self.nodes = nodes;
-        self.hash = hash;
+        self.node_indices = node_indices;
         removed
     }
 }
@@ -239,8 +249,8 @@ fn live_left(
     left
 }
 
-impl std::fmt::Display for Rga {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Rga {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut cur = self.head;
         while let Some(idx) = cur {
             if !self.nodes[idx].is_tombstone() {

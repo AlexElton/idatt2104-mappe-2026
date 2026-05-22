@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{NodeId, OperationId};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Op {
     Insert {

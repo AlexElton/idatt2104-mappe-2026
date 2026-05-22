@@ -25,7 +25,7 @@ impl OperationId {
     }
 
     pub fn precedes(&self, other: &OperationId) -> bool {
-        self.cmp(other) == Ordering::Less
+        self < other
     }
 }
 
