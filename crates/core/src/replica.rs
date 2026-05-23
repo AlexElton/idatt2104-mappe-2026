@@ -1,7 +1,23 @@
+//! Per-client replica wrapping the RGA with session bookkeeping.
+//!
+//! Each connected client owns a [`Replica`]. It holds an [`Rga`] and tracks
+//! which operations it has already seen so duplicates are silently ignored.
+//!
+//! Local edits go through [`local_insert`][Replica::local_insert] and
+//! [`local_delete`][Replica::local_delete]. Both apply the change immediately
+//! and return an [`Op`] ready to broadcast. Incoming remote ops arrive through
+//! [`apply_remote`][Replica::apply_remote].
+//!
+//! [`hydration_ops`][Replica::hydration_ops] returns the full op log needed to
+//! bring a newly connected peer up to date. After a GC pass via
+//! [`clear_deleted_nodes`][Replica::clear_deleted_nodes], that log is rebuilt
+//! from the surviving nodes, so delete ops no longer appear in it.
+
 use std::collections::HashSet;
 
 use crate::{ApplyOutcome, NodeId, Op, OperationId, ReplicaId, Rga, RgaError, RgaTree, SessionId};
 
+/// A single client's view of a shared document.
 #[derive(Debug, Clone)]
 pub struct Replica {
     rga: Rga,
@@ -26,6 +42,11 @@ impl Replica {
         }
     }
 
+    /// Inserts `value` at visible position `pos` and returns the op to broadcast.
+    ///
+    /// `pos` is 0-based and counts only visible (non-deleted) characters.
+    /// Position 0 puts the character at the head of the document. Returns
+    /// `None` if `pos` is greater than the current visible length.
     pub fn local_insert(&mut self, pos: usize, value: char) -> Option<Op> {
         let left = self.rga.left_id_for_insert(pos);
         if pos > 0 && left.is_none() {
@@ -44,6 +65,9 @@ impl Replica {
         Some(op)
     }
 
+    /// Deletes the visible character at position `pos` and returns the op to broadcast.
+    ///
+    /// `pos` is 0-based. Returns `None` if there is no visible character there.
     pub fn local_delete(&mut self, pos: usize) -> Option<Op> {
         let target = self.rga.target_id_for_delete(pos)?;
         let id = self.next_id();
@@ -57,6 +81,11 @@ impl Replica {
         Some(op)
     }
 
+    /// Applies an operation received from another replica.
+    ///
+    /// Returns [`ApplyOutcome::Duplicate`] if this op has already been seen.
+    /// Returns [`ApplyOutcome::MissingDependency`] if the op references a node
+    /// not yet present; the caller is responsible for buffering and retrying.
     pub fn apply_remote(&mut self, op: Op) -> ApplyOutcome {
         if self.applied_ops.contains(op.id()) {
             return ApplyOutcome::Duplicate;
@@ -85,22 +114,38 @@ impl Replica {
         }
     }
 
+    /// Applies a batch of remote operations in order, returning one [`ApplyOutcome`] per op.
     pub fn apply_remote_batch(&mut self, ops: impl IntoIterator<Item = Op>) -> Vec<ApplyOutcome> {
         ops.into_iter().map(|op| self.apply_remote(op)).collect()
     }
 
+    /// Returns the current visible text.
     pub fn text(&self) -> String {
         self.rga.text()
     }
 
+    /// Returns all operations needed to reconstruct the current document state.
+    ///
+    /// A newly connected peer can apply this batch and end up with the same
+    /// text. After [`clear_deleted_nodes`][Replica::clear_deleted_nodes], the
+    /// log is rebuilt from surviving nodes only, so delete ops no longer appear.
     pub fn hydration_ops(&self) -> Vec<Op> {
         self.op_log.clone()
     }
 
+    /// Returns a full snapshot of the RGA list, including tombstones.
     pub fn rga_tree(&self) -> RgaTree {
         self.rga.tree()
     }
 
+    /// Removes tombstoned nodes from the RGA and rebuilds the op log.
+    ///
+    /// After compaction, [`hydration_ops`][Replica::hydration_ops] contains
+    /// only inserts for the surviving characters. Any peer reconnecting after
+    /// this point must receive the updated hydration ops rather than the
+    /// original log.
+    ///
+    /// Returns the number of nodes removed.
     pub fn clear_deleted_nodes(&mut self) -> usize {
         let removed = self.rga.clear_tombstones();
         if removed > 0 {
@@ -119,6 +164,7 @@ impl Replica {
         removed
     }
 
+    /// Returns `true` if a node with the given ID exists, including tombstoned nodes.
     pub fn has_node(&self, id: &NodeId) -> bool {
         self.rga.contains_node(id)
     }

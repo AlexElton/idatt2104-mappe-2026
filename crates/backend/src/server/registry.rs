@@ -1,3 +1,17 @@
+//! Shared document state and client broadcast logic.
+//!
+//! [`Registry`] owns the single server-side [`Replica`] and a map of connected
+//! clients. All access is guarded by an `RwLock`; most operations take a write
+//! lock because they modify either the replica or the client map.
+//!
+//! When ops arrive, the registry applies them to its own replica and broadcasts
+//! only the accepted ones to every other client. Duplicates and invalid ops are
+//! dropped. The sender never receives its own broadcast.
+//!
+//! The `op_log` holds every accepted op in order and is sent to newly connected
+//! clients as part of the `Hydrate` message. After a GC pass it is rebuilt from
+//! [`Replica::hydration_ops`] and no longer contains delete ops.
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -11,43 +25,54 @@ use tokio::sync::{RwLock, mpsc};
 pub type Rx = mpsc::UnboundedReceiver<ServerMsg>;
 type Tx = mpsc::UnboundedSender<ServerMsg>;
 
+/// A client's current cursor position, keyed by `replica_id` in the presence map.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Presence {
     pub replica_id: String,
     pub cursor: usize,
 }
 
+/// A message sent from a client to the server over WebSocket.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
+    /// Registers the client's identity. Sent once after the socket opens.
     Hello {
         replica_id: String,
         session_id: String,
     },
+    /// One or more RGA operations to apply and relay to other clients.
     Ops {
         ops: Vec<Op>,
     },
+    /// A cursor update, broadcast to all other clients.
     Presence {
         presence: Presence,
     },
+    /// Requests a tombstone compaction pass on the shared document.
     GarbageCollect,
 }
 
+/// A message sent from the server to a client over WebSocket.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
+    /// Sent immediately on connection with the full document and presence state.
     Hydrate {
         ops: Vec<Op>,
         presence: HashMap<String, Presence>,
         clients: usize,
     },
+    /// One or more operations accepted from another client.
     Ops {
         ops: Vec<Op>,
     },
+    /// Updated presence map, sent on connect, disconnect, and cursor moves.
     Presence {
         presence: HashMap<String, Presence>,
         clients: usize,
     },
+    /// Sent after a GC pass with the number of tombstoned nodes removed.
     GarbageCollect {
         removed: usize,
     },
@@ -66,6 +91,9 @@ struct DocumentSession {
     presence: HashMap<String, Presence>,
 }
 
+/// Shared document state for all connected clients.
+///
+/// Cheaply cloneable; all clones point to the same underlying `Arc<RwLock<...>>`.
 #[derive(Clone)]
 pub struct Registry {
     inner: Arc<RwLock<DocumentSession>>,
@@ -83,6 +111,10 @@ impl Registry {
         }
     }
 
+    /// Registers a new connection and returns its receive channel and hydration message.
+    ///
+    /// The hydration message contains the full op log and presence map so the
+    /// client can reconstruct the document without a separate request.
     pub async fn connect(&self, connection_id: u64) -> (Rx, ServerMsg) {
         let (tx, rx) = mpsc::unbounded_channel::<ServerMsg>();
         let mut session = self.inner.write().await;
@@ -110,6 +142,9 @@ impl Registry {
         (rx, hydrate)
     }
 
+    /// Removes the connection and clears its presence entry.
+    ///
+    /// Broadcasts an updated presence map to all remaining clients.
     pub async fn disconnect(&self, connection_id: u64) {
         let mut session = self.inner.write().await;
         let removed = session.clients.remove(&connection_id);
@@ -132,6 +167,9 @@ impl Registry {
         );
     }
 
+    /// Associates a `replica_id` and `session_id` with an existing connection.
+    ///
+    /// Called when the client sends a `Hello` message after the socket opens.
     pub async fn set_identity(&self, connection_id: u64, replica_id: String, session_id: String) {
         let mut session = self.inner.write().await;
         let Some(client) = session.clients.get_mut(&connection_id) else {
@@ -143,6 +181,10 @@ impl Registry {
         client._session_id = Some(session_id);
     }
 
+    /// Applies ops from `from_connection` to the shared replica and broadcasts accepted ones.
+    ///
+    /// Invalid and duplicate ops are logged and dropped. The sending client
+    /// does not receive the broadcast.
     pub async fn process_ops(&self, from_connection: u64, ops: Vec<Op>) {
         let mut session = self.inner.write().await;
         if !session.clients.contains_key(&from_connection) {
@@ -179,6 +221,7 @@ impl Registry {
         );
     }
 
+    /// Updates the cursor position for a connection and broadcasts to all clients.
     pub async fn update_presence(&self, connection_id: u64, presence: Presence) {
         let mut session = self.inner.write().await;
         let Some(client) = session.clients.get_mut(&connection_id) else {
@@ -200,6 +243,10 @@ impl Registry {
         broadcast(&session.clients, message, None);
     }
 
+    /// Compacts the shared document by removing tombstoned nodes.
+    ///
+    /// Rebuilds the op log from the surviving nodes and broadcasts a
+    /// `GarbageCollect` message with the removal count to all other clients.
     pub async fn garbage_collect(&self, from_connection: u64) {
         let mut session = self.inner.write().await;
         if !session.clients.contains_key(&from_connection) {

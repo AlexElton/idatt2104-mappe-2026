@@ -1,3 +1,9 @@
+//! WebAssembly bindings for the RGA core.
+//!
+//! Exposes [`WasmReplica`] (as `RawReplica` on the JS side) for use in the
+//! browser. All ops cross the boundary as JSON-compatible `JsValue`s rather
+//! than typed Rust structs.
+
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -8,6 +14,11 @@ pub fn start() {
     console_error_panic_hook::set_once();
 }
 
+/// The RGA replica exposed to JavaScript as `RawReplica`.
+///
+/// Wraps [`Replica`] and serializes all ops to and from JSON on every boundary
+/// crossing. `localInsert` returns `undefined` when `value` is not exactly one
+/// character or when `pos` is out of range.
 #[wasm_bindgen(js_name = RawReplica)]
 pub struct WasmReplica {
     inner: Replica,

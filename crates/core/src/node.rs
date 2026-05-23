@@ -1,6 +1,11 @@
 use crate::{NodeId, OperationId};
 
-/// A single node in the RGA linked list.
+/// A single character in the RGA linked list.
+///
+/// Deleted characters are not removed from the list. `tombstone` is set to
+/// `true` and the node stays in place so that concurrent inserts anchored to
+/// it still resolve correctly. `link` is the vec-index of the next node in
+/// list order (not insertion order).
 #[derive(Debug, Clone)]
 pub struct Node {
     pub value: char,

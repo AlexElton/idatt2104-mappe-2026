@@ -1,3 +1,13 @@
+//! Axum router and WebSocket connection handler.
+//!
+//! Clients connect to `/ws`. On upgrade, the handler sends a `Hydrate` message
+//! with the current document state, then spawns two tasks: one that forwards
+//! messages from the registry channel to the socket, and one that reads from
+//! the socket and dispatches to the registry. Either task exiting causes the
+//! other to be aborted and triggers a disconnect.
+//!
+//! `/api/health` returns `"ok"` for basic liveness checks.
+
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -16,6 +26,10 @@ use futures_util::{SinkExt, StreamExt};
 
 use crate::server::registry::{ClientMsg, Registry, Rx};
 
+/// Shared state cloned into each request handler by Axum.
+///
+/// `next_connection_id` is a monotonic counter; IDs are never reused after
+/// disconnect.
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Registry,
@@ -35,6 +49,7 @@ impl AppState {
     }
 }
 
+/// Builds the application router with `/api/health` and `/ws` routes.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
