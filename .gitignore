@@ -16,7 +16,4 @@ apps/*/dist/
 
 .idea/
 
-# Cargo.lock — keep for binary crates, ignored here per project preference
-Cargo.lock
-
 /.playwright-mcp

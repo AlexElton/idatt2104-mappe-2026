@@ -1,17 +1,9 @@
 //! Shared document state and client broadcast logic.
 //!
-//! [`Registry`] owns the single server-side [`Replica`] and a map of connected
-//! clients. All access is guarded by an `RwLock`; most operations take a write
-//! lock because they modify either the replica or the client map.
-//!
-//! When ops arrive, the registry applies them to its own replica and broadcasts
-//! only the accepted ones to every other client. Duplicates and invalid ops are
-//! dropped. The sender never receives its own broadcast.
-//!
-//! The `op_log` holds every accepted op in order and is sent to newly connected
-//! clients as part of the `Hydrate` message. After a GC pass it is rebuilt from
-//! [`Replica::hydration_ops`] and no longer contains delete ops.
-
+//! This essentially acts just like the client-side. The instance trackes its own
+//! [`Replica`], we also provide functionality to re-broadcast any messages received
+//! to all connected clients. The [`Registry`] is responsible for maintaining the
+//! state of the shared document and broadcasting updates to all clients.
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -25,7 +17,7 @@ use tokio::sync::{RwLock, mpsc};
 pub type Rx = mpsc::UnboundedReceiver<ServerMsg>;
 type Tx = mpsc::UnboundedSender<ServerMsg>;
 
-/// A client's current cursor position, keyed by `replica_id` in the presence map.
+/// A client's current cursor position.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Presence {
     pub replica_id: String,
@@ -41,15 +33,14 @@ pub enum ClientMsg {
         replica_id: String,
         session_id: String,
     },
+
     /// One or more RGA operations to apply and relay to other clients.
-    Ops {
-        ops: Vec<Op>,
-    },
-    /// A cursor update, broadcast to all other clients.
-    Presence {
-        presence: Presence,
-    },
-    /// Requests a tombstone compaction pass on the shared document.
+    Ops { ops: Vec<Op> },
+
+    /// A cursor update, broadcast's to all other clients.
+    Presence { presence: Presence },
+
+    /// Requests all clients to perform garbage collection by removing all tombstones
     GarbageCollect,
 }
 
@@ -63,19 +54,18 @@ pub enum ServerMsg {
         presence: HashMap<String, Presence>,
         clients: usize,
     },
+
     /// One or more operations accepted from another client.
-    Ops {
-        ops: Vec<Op>,
-    },
+    Ops { ops: Vec<Op> },
+
     /// Updated presence map, sent on connect, disconnect, and cursor moves.
     Presence {
         presence: HashMap<String, Presence>,
         clients: usize,
     },
+
     /// Sent after a GC pass with the number of tombstoned nodes removed.
-    GarbageCollect {
-        removed: usize,
-    },
+    GarbageCollect { removed: usize },
 }
 
 struct ClientInfo {
@@ -93,7 +83,7 @@ struct DocumentSession {
 
 /// Shared document state for all connected clients.
 ///
-/// Cheaply cloneable; all clones point to the same underlying `Arc<RwLock<...>>`.
+/// Cheaply cloneable because all clones point to the same memory location.
 #[derive(Clone)]
 pub struct Registry {
     inner: Arc<RwLock<DocumentSession>>,
@@ -134,6 +124,7 @@ impl Registry {
             clients: session.clients.len(),
         };
 
+        // TODO: Should be replaced with propper logging system
         println!(
             "[INFO] connection {} connected ({} clients)",
             connection_id,
@@ -160,6 +151,7 @@ impl Registry {
         };
         broadcast(&session.clients, message, None);
 
+        // TODO: Should be replaced with propper logging system
         println!(
             "[INFO] connection {} disconnected ({} clients)",
             connection_id,
@@ -173,6 +165,7 @@ impl Registry {
     pub async fn set_identity(&self, connection_id: u64, replica_id: String, session_id: String) {
         let mut session = self.inner.write().await;
         let Some(client) = session.clients.get_mut(&connection_id) else {
+            // TODO: Should be replaced with propper logging system
             eprintln!("[WARN] hello for unknown connection {}", connection_id);
             return;
         };
@@ -188,6 +181,7 @@ impl Registry {
     pub async fn process_ops(&self, from_connection: u64, ops: Vec<Op>) {
         let mut session = self.inner.write().await;
         if !session.clients.contains_key(&from_connection) {
+            // TODO: Should be replaced with propper logging system
             eprintln!("[WARN] ops for unknown connection {}", from_connection);
             return;
         }
@@ -202,6 +196,7 @@ impl Registry {
                 }
                 ApplyOutcome::Duplicate => {}
                 ApplyOutcome::MissingDependency | ApplyOutcome::Invalid => {
+                    // TODO: Should be replaced with propper logging system
                     eprintln!(
                         "[WARN] rejected op from connection {}: {:?}",
                         from_connection, outcome
@@ -225,6 +220,7 @@ impl Registry {
     pub async fn update_presence(&self, connection_id: u64, presence: Presence) {
         let mut session = self.inner.write().await;
         let Some(client) = session.clients.get_mut(&connection_id) else {
+            // TODO: Should be replaced with propper logging system
             eprintln!("[WARN] presence for unknown connection {}", connection_id);
             return;
         };
@@ -250,6 +246,7 @@ impl Registry {
     pub async fn garbage_collect(&self, from_connection: u64) {
         let mut session = self.inner.write().await;
         if !session.clients.contains_key(&from_connection) {
+            // TODO: Should be replaced with propper logging system
             eprintln!(
                 "[WARN] garbage_collect for unknown connection {}",
                 from_connection

@@ -1,12 +1,8 @@
 //! Axum router and WebSocket connection handler.
 //!
-//! Clients connect to `/ws`. On upgrade, the handler sends a `Hydrate` message
-//! with the current document state, then spawns two tasks: one that forwards
-//! messages from the registry channel to the socket, and one that reads from
-//! the socket and dispatches to the registry. Either task exiting causes the
-//! other to be aborted and triggers a disconnect.
+//! Clients connect to `/ws` to send and receive messages.
 //!
-//! `/api/health` returns `"ok"` for basic liveness checks.
+//! `/api/health` returns `"ok"` for basic health checks for the server.
 
 use std::sync::{
     Arc,
@@ -27,9 +23,6 @@ use futures_util::{SinkExt, StreamExt};
 use crate::server::registry::{ClientMsg, Registry, Rx};
 
 /// Shared state cloned into each request handler by Axum.
-///
-/// `next_connection_id` is a monotonic counter; IDs are never reused after
-/// disconnect.
 #[derive(Clone)]
 pub struct AppState {
     pub registry: Registry,
@@ -82,6 +75,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             let json = match serde_json::to_string(&message) {
                 Ok(json) => json,
                 Err(error) => {
+                    // TODO: Should be replaced with propper logging system
                     eprintln!("[WARN] failed to serialize server message: {error}");
                     continue;
                 }
@@ -105,6 +99,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             let parsed: ClientMsg = match serde_json::from_str(&text) {
                 Ok(message) => message,
                 Err(error) => {
+                    // TODO: Should be replaced with propper logging system
                     eprintln!("[WARN] bad message from connection {connection_id}: {error}");
                     continue;
                 }
