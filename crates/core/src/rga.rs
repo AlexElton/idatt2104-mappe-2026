@@ -1,24 +1,35 @@
-//! The RGA tree.
+//! The Replicated Growable Array (RGA) tree.
 //!
-//! Text is stored as a tree of nodes. Each insertion references the node
-//! to its left as an anchor, making the inserted node a child of that anchor.
-//! The character order is produced by a depth-first search with children
-//! ordered by [`OperationId`] compare method. Tombstones (deleted
-//! characters) stay in the tree until [`Rga::clear_tombstones`] is called.
+//! This module is the low-level data structure behind [`crate::Replica`]. It
+//! knows how to insert nodes, mark nodes as deleted, and render the current
+//! visible text.
 //!
-//! # Insert done at the same time
+//! # Tree shape
 //!
-//! When two replicas insert at the same position at the same time, both ops arrive
-//! with the same `left` anchor. The tree resolves this by sorting those sibling
-//! nodes by [`OperationId`] which also compares against replica id and user id.
-//! every replica gets the same depth-first traversal regardless of arrival order.
+//! Each insert names the node to its left. In the tree, that makes the new node a
+//! child of the left anchor. Inserts at the head of the document have no anchor.
+//! The document order is a depth-first traversal of the
+//! roots and children.
 //!
-//! # Why tombstones persist
+//! # Concurrent inserts
 //!
-//! Removing a deleted node immediately would break any incomming insert that
-//! references it as its `left` anchor. The insert would come in later, fail
-//! with [`RgaError::MissingDependency`], and be lost. Keeping the tombstone
-//! means the anchor is always resolvable until an explicit GC pass.
+//! If two replicas insert at the same visible position, both operations have the
+//! same left anchor and become siblings. Siblings are ordered deterministically by
+//! [`OperationId`].
+//!
+//! # Tombstones
+//!
+//! Deletes do not remove nodes immediately. A deleted node becomes a tombstone so
+//! future inserts that still reference it as their left anchor can be applied.
+//! [`Rga::clear_tombstones`] "physically" removes tombstones and rewrites anchors,
+//! but that is only safe when no replica will later send operations that depend
+//! on the removed nodes.
+//!
+//! # Debug snapshots
+//!
+//! [`Rga::tree`] returns the full tree structure.
+//! It includes visible text, tombstones, anchors, child links, and the
+//! next node in traversal order.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -29,11 +40,12 @@ use crate::{node::Node, NodeId, OperationId};
 
 /// RGA tree, including tombstones.
 ///
-/// Returned by [`Rga::tree`] and [`crate::Replica::rga_tree`]. Useful for debugging
-/// and for driving a UI that needs to display or animate deleted characters.
+/// Returned by [`Rga::tree`] and [`crate::Replica::rga_tree`]. Useful for debugging.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RgaTree {
+    /// Visible document text with tombstones skipped.
     pub text: String,
+    /// All nodes in internal storage order, including tombstones.
     pub nodes: Vec<RgaTreeNode>,
 }
 
@@ -83,6 +95,7 @@ pub struct Rga {
 }
 
 impl Rga {
+    /// Creates an empty RGA tree.
     pub fn new() -> Self {
         Self::default()
     }
@@ -153,6 +166,7 @@ impl Rga {
         Ok(())
     }
 
+    /// Returns whether a node exists, including tombstoned nodes.
     pub fn contains_node(&self, id: &NodeId) -> bool {
         self.node_indices.contains_key(id)
     }
@@ -244,7 +258,7 @@ impl Rga {
         }
     }
 
-    /// Removes tombstoned nodes and rebuilds the index.
+    /// Removes tombstoned nodes and rebuilds anchors and indexes.
     ///
     /// Returns the number of nodes removed.
     pub fn clear_tombstones(&mut self) -> usize {

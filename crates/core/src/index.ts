@@ -1,5 +1,5 @@
 /**
- * This file is a light weight wrapper around the Rust crate types.
+ * TypeScript wrapper around the WebAssembly RGA core.
  */
 
 import { RawReplica } from "../pkg/rga_core.js";
@@ -33,6 +33,7 @@ export type RgaTreeNode = {
   tombstone: boolean;
   id: OperationId;
   left: OperationId | null;
+  children: OperationId[];
   next: OperationId | null;
   deleted_by: OperationId | null;
 };

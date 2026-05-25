@@ -1,35 +1,48 @@
-//! Id types for operations and nodes.
+//! Id types for operations and RGA nodes.
 //!
-//! Every operation has a unique [`OperationId`]. `NodeId` is just an alias for
-//! `OperationId`.
+//! Every operation has a unique [`OperationId`]. A node is created by an insert
+//! operation, so [`NodeId`] is the same identifier as the insert operation that
+//! created that node.
 //!
-//! The total order on [`OperationId`] is what the RGA uses decide where nodes
-//! are inserted:
-//!  - Lamport timestamp first
-//!  - Replica ID second
-//!  - Session ID third (this is essentially the client ID)
+//! The total order on [`OperationId`] is the tie-breaker used when
+//! multiple inserts share the same parent node. The comparison uses:
+//!
+//! 1. Lamport timestamp
+//! 2. Replica ID
+//! 3. Session ID
+//! 4. Local sequence number
 
 use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
+/// Id for one logical replica, such as a browser profile.
 pub type ReplicaId = String;
+
+/// Id for one runtime session of a replica.
 pub type SessionId = String;
 
+/// Id for a node in the RGA tree.
 pub type NodeId = OperationId;
 
 /// A globally unique identifier for a single operation.
 ///
-/// The four fields together guarantee uniqueness across replicas and sessions.
+/// The four fields together make operations unique and give inserts that is
+/// done at the same time a stable order on every replica.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationId {
+    /// Runtime session that produced the operation.
     pub session_id: SessionId,
+    /// Logical replica that produced the operation.
     pub replica_id: ReplicaId,
+    /// Lamport timestamp observed by the producing replica.
     pub lamport: u64,
+    /// Local sequence number within the producing replica.
     pub seq: u64,
 }
 
 impl OperationId {
+    /// Creates a new operation identifier.
     pub fn new(session_id: SessionId, replica_id: ReplicaId, lamport: u64, seq: u64) -> Self {
         Self {
             session_id,

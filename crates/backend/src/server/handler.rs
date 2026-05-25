@@ -1,8 +1,10 @@
-//! Axum router and WebSocket connection handler.
+//! Axum routes and WebSocket connection handling.
 //!
-//! Clients connect to `/ws` to send and receive messages.
+//! # Routes
 //!
-//! `/api/health` returns `"ok"` for basic health checks for the server.
+//! - `GET /api/health` returns `"ok"` for simple health checks.
+//! - `GET /ws` upgrades to a WebSocket, used by `apps/web`.
+//!
 
 use std::sync::{
     Arc,
@@ -25,11 +27,14 @@ use crate::server::registry::{ClientMsg, Registry, Rx};
 /// Shared state cloned into each request handler by Axum.
 #[derive(Clone)]
 pub struct AppState {
+    /// Shared document registry used by every request.
     pub registry: Registry,
+    /// Atomic counter for assigning local connection IDs.
     pub next_connection_id: Arc<AtomicU64>,
 }
 
 impl AppState {
+    /// Creates application state with an empty registry.
     pub fn new() -> Self {
         Self {
             registry: Registry::new(),
@@ -75,7 +80,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             let json = match serde_json::to_string(&message) {
                 Ok(json) => json,
                 Err(error) => {
-                    // TODO: Should be replaced with propper logging system
+                    // TODO: Should be replaced with a proper logging system
                     eprintln!("[WARN] failed to serialize server message: {error}");
                     continue;
                 }
@@ -99,7 +104,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             let parsed: ClientMsg = match serde_json::from_str(&text) {
                 Ok(message) => message,
                 Err(error) => {
-                    // TODO: Should be replaced with propper logging system
+                    // TODO: Should be replaced with a proper logging system
                     eprintln!("[WARN] bad message from connection {connection_id}: {error}");
                     continue;
                 }

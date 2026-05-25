@@ -1,8 +1,9 @@
 //! Operation types sent between replicas.
 //!
-//! A local edit produces an [`Op`] that is broadcast to all other connected
-//! replicas. Remote replicas apply it via [`crate::Replica::apply_remote`],
-//! which returns an [`ApplyOutcome`] describing what happened.
+//! A local edit produces an [`Op`] that is sent to the backend and broadcast to
+//! the other clients. Remote replicas apply it with
+//! [`crate::Replica::apply_remote`], which returns an [`ApplyOutcome`] describing
+//! whether the operation changed the document.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,7 @@ pub enum Op {
 }
 
 impl Op {
+    /// Returns the unique ID of this operation.
     pub fn id(&self) -> &OperationId {
         match self {
             Op::Insert { id, .. } | Op::Delete { id, .. } => id,
@@ -46,6 +48,7 @@ pub enum ApplyOutcome {
 }
 
 impl ApplyOutcome {
+    /// Returns the string used by the WebAssembly API.
     pub fn as_str(self) -> &'static str {
         match self {
             ApplyOutcome::Applied => "applied",

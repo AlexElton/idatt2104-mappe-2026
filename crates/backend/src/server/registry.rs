@@ -1,9 +1,15 @@
-//! Shared document state and client broadcast logic.
+//! Shared document state and broadcast rules.
 //!
-//! This essentially acts just like the client-side. The instance trackes its own
-//! [`Replica`], we also provide functionality to re-broadcast any messages received
-//! to all connected clients. The [`Registry`] is responsible for maintaining the
-//! state of the shared document and broadcasting updates to all clients.
+//! [`Registry`] owns the single in-memory document session used by the backend.
+//! It acts like another RGA peer: incoming operations are first applied to the
+//! server's own [`Replica`], and only operations accepted are sent to the other clients.
+//!
+//! # Broadcast policy
+//!
+//! Accepted CRDT operations are sent to every client except the sender.
+//! Garbage collection is a naive solution command: the server compacts
+//! its own replica, and asks the other clients to compact too.
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -17,7 +23,6 @@ use tokio::sync::{RwLock, mpsc};
 pub type Rx = mpsc::UnboundedReceiver<ServerMsg>;
 type Tx = mpsc::UnboundedSender<ServerMsg>;
 
-/// A client's current cursor position.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Presence {
     pub replica_id: String,
@@ -37,10 +42,10 @@ pub enum ClientMsg {
     /// One or more RGA operations to apply and relay to other clients.
     Ops { ops: Vec<Op> },
 
-    /// A cursor update, broadcast's to all other clients.
+    /// A cursor update, broadcast to all clients.
     Presence { presence: Presence },
 
-    /// Requests all clients to perform garbage collection by removing all tombstones
+    /// Requests naive tombstone cleanup on the server and other clients.
     GarbageCollect,
 }
 
@@ -64,7 +69,7 @@ pub enum ServerMsg {
         clients: usize,
     },
 
-    /// Sent after a GC pass with the number of tombstoned nodes removed.
+    /// Tells a client to run naive tombstone cleanup locally.
     GarbageCollect { removed: usize },
 }
 
@@ -81,7 +86,7 @@ struct DocumentSession {
     presence: HashMap<String, Presence>,
 }
 
-/// Shared document state for all connected clients.
+/// Shared in-memory document state for all connected clients.
 ///
 /// Cheaply cloneable because all clones point to the same memory location.
 #[derive(Clone)]
@@ -90,6 +95,7 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// Creates an empty registry for the single shared document.
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(DocumentSession {
@@ -124,7 +130,7 @@ impl Registry {
             clients: session.clients.len(),
         };
 
-        // TODO: Should be replaced with propper logging system
+        // TODO: Should be replaced with a proper logging system
         println!(
             "[INFO] connection {} connected ({} clients)",
             connection_id,
@@ -151,7 +157,7 @@ impl Registry {
         };
         broadcast(&session.clients, message, None);
 
-        // TODO: Should be replaced with propper logging system
+        // TODO: Should be replaced with a proper logging system
         println!(
             "[INFO] connection {} disconnected ({} clients)",
             connection_id,
@@ -165,7 +171,7 @@ impl Registry {
     pub async fn set_identity(&self, connection_id: u64, replica_id: String, session_id: String) {
         let mut session = self.inner.write().await;
         let Some(client) = session.clients.get_mut(&connection_id) else {
-            // TODO: Should be replaced with propper logging system
+            // TODO: Should be replaced with a proper logging system
             eprintln!("[WARN] hello for unknown connection {}", connection_id);
             return;
         };
@@ -176,12 +182,12 @@ impl Registry {
 
     /// Applies ops from `from_connection` to the shared replica and broadcasts accepted ones.
     ///
-    /// Invalid and duplicate ops are logged and dropped. The sending client
-    /// does not receive the broadcast.
+    /// Duplicates are ignored. Invalid operations and missing dependencies are
+    /// logged and dropped. The sending client does not receive the broadcast.
     pub async fn process_ops(&self, from_connection: u64, ops: Vec<Op>) {
         let mut session = self.inner.write().await;
         if !session.clients.contains_key(&from_connection) {
-            // TODO: Should be replaced with propper logging system
+            // TODO: Should be replaced with a proper logging system
             eprintln!("[WARN] ops for unknown connection {}", from_connection);
             return;
         }
@@ -196,7 +202,7 @@ impl Registry {
                 }
                 ApplyOutcome::Duplicate => {}
                 ApplyOutcome::MissingDependency | ApplyOutcome::Invalid => {
-                    // TODO: Should be replaced with propper logging system
+                    // TODO: Should be replaced with a proper logging system
                     eprintln!(
                         "[WARN] rejected op from connection {}: {:?}",
                         from_connection, outcome
@@ -220,7 +226,7 @@ impl Registry {
     pub async fn update_presence(&self, connection_id: u64, presence: Presence) {
         let mut session = self.inner.write().await;
         let Some(client) = session.clients.get_mut(&connection_id) else {
-            // TODO: Should be replaced with propper logging system
+            // TODO: Should be replaced with a proper logging system
             eprintln!("[WARN] presence for unknown connection {}", connection_id);
             return;
         };
@@ -242,11 +248,11 @@ impl Registry {
     /// Compacts the shared document by removing tombstoned nodes.
     ///
     /// Rebuilds the op log from the surviving nodes and broadcasts a
-    /// `GarbageCollect` message with the removal count to all other clients.
+    /// `GarbageCollect` message to all other clients.
     pub async fn garbage_collect(&self, from_connection: u64) {
         let mut session = self.inner.write().await;
         if !session.clients.contains_key(&from_connection) {
-            // TODO: Should be replaced with propper logging system
+            // TODO: Should be replaced with a proper logging system
             eprintln!(
                 "[WARN] garbage_collect for unknown connection {}",
                 from_connection

@@ -1,18 +1,29 @@
-//! Per-client replica wrapping the RGA.
+//! Per-client replica state.
 //!
-//! Each connected client owns a [`Replica`]. It holds an [`Rga`] and tracks
-//! which operations it has already seen so duplicates are silently ignored.
+//! A [`Replica`] is the API the application code usually interacts with.
+//! It wraps an [`Rga`], tracks operation IDs that have already been applied,
+//! assigns Lamport IDs to local edits, and keeps an operation log.
 //!
-//! Local edits go through [`local_insert`][Replica::local_insert] and
-//! [`local_delete`][Replica::local_delete]. Both apply the change immediately
-//! and return an [`Op`] that can be broadcasted to the other clients. Incoming remote ops arrive through
-//! [`apply_remote`][Replica::apply_remote].
+//! # Editing
 //!
-//! [`hydration_ops`][Replica::hydration_ops] returns the full op log needed to
-//! bring a newly connected peer up to date.
+//! [`Replica::local_insert`] inserts before the character currently at
+//! `pos` (or at the end when `pos` is the text length).
 //!
-//! [`clear_deleted_nodes`][Replica::clear_deleted_nodes], that log is rebuilt
-//! from the surviving nodes, so delete ops no longer appear in it.
+//! [`Replica::local_delete`] deletes the visible character at
+//! `pos`. Both methods apply the edit immediately and return an [`Op`] that the
+//! caller can send to other replicas.
+//!
+//! # Remote operations
+//!
+//! Remote operations go through [`Replica::apply_remote`] or
+//! [`Replica::apply_remote_batch`]. Duplicates are ignored. Missing dependencies
+//! are reported so the caller waith for the dependencies and retry when they arrive.
+//!
+//! # Garbage collection
+//!
+//! [`Replica::clear_deleted_nodes`] removes tombstones and
+//! rebuilds that log from surviving inserts, which is useful for the demo but is
+//! not safe because some clients will be outof sync if they're not connected.
 
 use std::collections::HashSet;
 
@@ -31,6 +42,7 @@ pub struct Replica {
 }
 
 impl Replica {
+    /// Creates an empty replica with the given identity.
     pub fn new(replica_id: ReplicaId, session_id: SessionId) -> Self {
         Self {
             rga: Rga::new(),
@@ -80,8 +92,8 @@ impl Replica {
     ///
     /// Returns [`ApplyOutcome::Duplicate`] if this op has already been seen.
     /// Returns [`ApplyOutcome::MissingDependency`] if the op references a node
-    /// not yet present in the RGA. The caller is responsible for buffering and retrying later.
-    /// once the dependency arrives.
+    /// not yet present in the RGA. The caller is responsible for buffering and
+    /// retrying once the dependency arrives.
     pub fn apply_remote(&mut self, op: Op) -> ApplyOutcome {
         if self.applied_ops.contains(op.id()) {
             return ApplyOutcome::Duplicate;

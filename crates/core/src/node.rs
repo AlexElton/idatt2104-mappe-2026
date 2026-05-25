@@ -1,10 +1,16 @@
+//! Internal node storage for the RGA tree.
+//!
+//! A node is one inserted character plus the metadata needed to keep it ordered
+//! relative to other nodes. The type is not exported directly; public snapshots
+//! use [`crate::RgaTreeNode`] instead.
+
 use crate::{NodeId, OperationId};
 
 /// A single character in the RGA tree.
 ///
 /// Deleted characters are not removed from the tree. `tombstone` is set to
-/// `true` and the node stays in place so that inserts done at the sam time
-/// anchored to it still resolve correctly.
+/// `true` and the node stays in place so inserts anchored to it still resolve
+/// correctly.
 #[derive(Debug, Clone)]
 pub struct Node {
     pub value: char,
@@ -16,6 +22,7 @@ pub struct Node {
 }
 
 impl Node {
+    /// Creates a live node for one inserted character.
     pub fn new(value: char, left: Option<NodeId>, id: NodeId) -> Self {
         Self {
             value,
@@ -27,6 +34,7 @@ impl Node {
         }
     }
 
+    /// Returns whether this node has been deleted.
     pub fn is_tombstone(&self) -> bool {
         self.tombstone
     }
