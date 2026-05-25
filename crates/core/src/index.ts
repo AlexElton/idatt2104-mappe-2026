@@ -1,3 +1,7 @@
+/**
+ * This file is a light weight wrapper around the Rust crate types.
+ */
+
 import { RawReplica } from "../pkg/rga_core.js";
 
 export type OperationId = {

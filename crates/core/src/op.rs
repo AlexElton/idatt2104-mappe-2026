@@ -1,4 +1,4 @@
-//! Operation types exchanged between replicas.
+//! Operation types sent between replicas.
 //!
 //! A local edit produces an [`Op`] that is broadcast to all other connected
 //! replicas. Remote replicas apply it via [`crate::Replica::apply_remote`],
@@ -19,10 +19,7 @@ pub enum Op {
         id: NodeId,
     },
     /// Mark the node identified by `target` as deleted.
-    Delete {
-        target: NodeId,
-        id: OperationId,
-    },
+    Delete { target: NodeId, id: OperationId },
 }
 
 impl Op {
@@ -42,8 +39,6 @@ pub enum ApplyOutcome {
     /// The operation had already been applied; it was safely ignored.
     Duplicate,
     /// The operation references a node not yet present on this replica.
-    ///
-    /// The caller should buffer the op and retry once the dependency arrives.
     MissingDependency,
     /// The operation is structurally invalid (e.g. an insert referencing
     /// itself as its own left anchor).

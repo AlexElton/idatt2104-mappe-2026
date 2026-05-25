@@ -1,11 +1,10 @@
 use crate::{NodeId, OperationId};
 
-/// A single character in the RGA linked list.
+/// A single character in the RGA tree.
 ///
-/// Deleted characters are not removed from the list. `tombstone` is set to
-/// `true` and the node stays in place so that concurrent inserts anchored to
-/// it still resolve correctly. `link` is the vec-index of the next node in
-/// list order (not insertion order).
+/// Deleted characters are not removed from the tree. `tombstone` is set to
+/// `true` and the node stays in place so that inserts done at the sam time
+/// anchored to it still resolve correctly.
 #[derive(Debug, Clone)]
 pub struct Node {
     pub value: char,
@@ -13,7 +12,7 @@ pub struct Node {
     pub left: Option<NodeId>,
     pub id: NodeId,
     pub deleted_by: Option<OperationId>,
-    pub link: Option<usize>,
+    pub children: Vec<usize>,
 }
 
 impl Node {
@@ -24,7 +23,7 @@ impl Node {
             left,
             id,
             deleted_by: None,
-            link: None,
+            children: Vec::new(),
         }
     }
 

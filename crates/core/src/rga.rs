@@ -1,20 +1,21 @@
-//! The RGA linked list.
+//! The RGA tree.
 //!
-//! Text is stored as a singly-linked list of nodes. The list order is the
-//! canonical character order. Tombstones (deleted characters) stay in the list
-//! until [`Rga::clear_tombstones`] is called.
+//! Text is stored as a tree of nodes. Each insertion references the node
+//! to its left as an anchor, making the inserted node a child of that anchor.
+//! The character order is produced by a depth-first search with children
+//! ordered by [`OperationId`] compare method. Tombstones (deleted
+//! characters) stay in the tree until [`Rga::clear_tombstones`] is called.
 //!
-//! # Concurrent insert resolution
+//! # Insert done at the same time
 //!
-//! When two replicas insert at the same position concurrently, both ops arrive
-//! with the same `left` anchor. The list resolves this by scanning forward
-//! past any nodes whose [`OperationId`] is greater than the new node's ID.
-//! Because that ordering is total and deterministic, every replica ends up
-//! with the same sequence regardless of arrival order.
+//! When two replicas insert at the same position at the same time, both ops arrive
+//! with the same `left` anchor. The tree resolves this by sorting those sibling
+//! nodes by [`OperationId`] which also compares against replica id and user id.
+//! every replica gets the same depth-first traversal regardless of arrival order.
 //!
 //! # Why tombstones persist
 //!
-//! Removing a deleted node immediately would break any in-flight insert that
+//! Removing a deleted node immediately would break any incomming insert that
 //! references it as its `left` anchor. The insert would come in later, fail
 //! with [`RgaError::MissingDependency`], and be lost. Keeping the tombstone
 //! means the anchor is always resolvable until an explicit GC pass.
@@ -26,7 +27,7 @@ use serde::Serialize;
 
 use crate::{node::Node, NodeId, OperationId};
 
-/// A point-in-time snapshot of the RGA list, including tombstones.
+/// RGA tree, including tombstones.
 ///
 /// Returned by [`Rga::tree`] and [`crate::Replica::rga_tree`]. Useful for debugging
 /// and for driving a UI that needs to display or animate deleted characters.
@@ -36,11 +37,7 @@ pub struct RgaTree {
     pub nodes: Vec<RgaTreeNode>,
 }
 
-/// A single node in an [`RgaTree`] snapshot.
-///
-/// `visible_index` is `Some(n)` when the character is not a tombstone, where
-/// `n` is its 0-based position in the visible text. Tombstoned nodes have
-/// `visible_index: None`.
+/// A single node in an [`RgaTree`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RgaTreeNode {
     pub index: usize,
@@ -49,6 +46,7 @@ pub struct RgaTreeNode {
     pub tombstone: bool,
     pub id: NodeId,
     pub left: Option<NodeId>,
+    pub children: Vec<NodeId>,
     pub next: Option<NodeId>,
     pub deleted_by: Option<OperationId>,
 }
@@ -60,7 +58,7 @@ pub enum RgaError {
     DuplicateNode,
     /// The operation references a node that does not yet exist in this replica.
     MissingDependency,
-    /// The operation is structurally invalid.
+    /// The operation is invalid.
     Invalid,
 }
 
@@ -76,12 +74,12 @@ impl fmt::Display for RgaError {
 
 impl std::error::Error for RgaError {}
 
-/// The RGA linked list for a single document.
+/// The RGA tree for a single document.
 #[derive(Debug, Clone, Default)]
 pub struct Rga {
     nodes: Vec<Node>,
     node_indices: HashMap<NodeId, usize>,
-    head: Option<usize>,
+    roots: Vec<usize>,
 }
 
 impl Rga {
@@ -91,15 +89,10 @@ impl Rga {
 
     /// Inserts a new character to the right of `left`.
     ///
-    /// Pass `left: None` to insert at the head of the document. If two inserts
-    /// arrive with the same `left`, the one with the lower [`OperationId`] is
-    /// placed further right; the scan walks forward until it finds a node whose
-    /// ID is smaller, then stops.
-    ///
     /// # Errors
     ///
-    /// - [`RgaError::DuplicateNode`] if `id` is already in the list.
-    /// - [`RgaError::MissingDependency`] if `left` is `Some` but not yet in the list.
+    /// - [`RgaError::DuplicateNode`] if `id` is already in the tree.
+    /// - [`RgaError::MissingDependency`] if `left` is `Some` but not yet in the tree.
     pub fn insert(
         &mut self,
         left: Option<NodeId>,
@@ -124,24 +117,13 @@ impl Rga {
         self.nodes.push(Node::new(value, left.clone(), id.clone()));
         self.node_indices.insert(id.clone(), new_idx);
 
-        let mut prev = left_idx;
-        let mut cur = match left_idx {
-            None => self.head,
-            Some(idx) => self.nodes[idx].link,
-        };
-
-        while let Some(cur_idx) = cur {
-            if self.nodes[cur_idx].id.precedes(&id) {
-                break;
+        match left_idx {
+            None => insert_child(&mut self.roots, &self.nodes, new_idx),
+            Some(parent_idx) => {
+                let mut children = std::mem::take(&mut self.nodes[parent_idx].children);
+                insert_child(&mut children, &self.nodes, new_idx);
+                self.nodes[parent_idx].children = children;
             }
-            prev = Some(cur_idx);
-            cur = self.nodes[cur_idx].link;
-        }
-
-        self.nodes[new_idx].link = cur;
-        match prev {
-            None => self.head = Some(new_idx),
-            Some(prev_idx) => self.nodes[prev_idx].link = Some(new_idx),
         }
 
         Ok(())
@@ -149,12 +131,11 @@ impl Rga {
 
     /// Marks the node identified by `target` as deleted.
     ///
-    /// The node stays in the list as a tombstone. Its position continues to
-    /// anchor concurrent inserts that used it as their `left` reference.
+    /// The node stays in the tree as a tombstone.
     ///
     /// # Errors
     ///
-    /// - [`RgaError::MissingDependency`] if `target` is not in the list.
+    /// - [`RgaError::MissingDependency`] if `target` is not in the tree.
     /// - [`RgaError::Invalid`] if `target` and `deleted_by` are the same ID.
     pub fn delete(&mut self, target: NodeId, deleted_by: OperationId) -> Result<(), RgaError> {
         if target == deleted_by {
@@ -176,22 +157,12 @@ impl Rga {
         self.node_indices.contains_key(id)
     }
 
-    /// Returns the [`NodeId`] of the `pos`-th visible character to use as the
-    /// `left` anchor for a local insert at that position.
+    /// Returns the [`NodeId`] at the specified position of the visible characters.
     ///
-    /// Returns `None` for `pos == 0` (head insert) or when `pos` is beyond
+    /// Returns `None` for `pos == 0` (head position) or when `pos` is outside
     /// the current visible length.
-    pub fn left_id_for_insert(&self, pos: usize) -> Option<NodeId> {
+    pub fn get_node_id_by_position(&self, pos: usize) -> Option<NodeId> {
         self.find_visible(pos).map(|idx| self.nodes[idx].id.clone())
-    }
-
-    /// Returns the [`NodeId`] of the visible character at `pos` for use as a
-    /// deletion target. `pos` is 0-based over visible characters only.
-    ///
-    /// Returns `None` if `pos` is out of range.
-    pub fn target_id_for_delete(&self, pos: usize) -> Option<NodeId> {
-        self.find_visible(pos.checked_add(1)?)
-            .map(|idx| self.nodes[idx].id.clone())
     }
 
     fn find_visible(&self, pos: usize) -> Option<usize> {
@@ -200,39 +171,50 @@ impl Rga {
         }
 
         let mut count = 0;
-        let mut cur = self.head;
-        while let Some(idx) = cur {
+        for idx in self.dfs_order() {
             if !self.nodes[idx].is_tombstone() {
                 count += 1;
                 if count == pos {
                     return Some(idx);
                 }
             }
-            cur = self.nodes[idx].link;
         }
         None
     }
 
-    /// Returns the visible text, skipping tombstoned characters.
-    pub fn text(&self) -> String {
-        self.to_string()
+    fn dfs_order(&self) -> Vec<usize> {
+        let mut order = Vec::with_capacity(self.nodes.len());
+        for &root in &self.roots {
+            self.push_dfs(root, &mut order);
+        }
+        order
     }
 
-    /// Returns a full snapshot of the list, including tombstones.
-    ///
-    /// Useful for debugging and for driving UIs that need to show or animate
-    /// deleted characters. For just the visible content, use [`text`][Rga::text].
-    pub fn tree(&self) -> RgaTree {
-        let mut visible_indices = vec![None; self.nodes.len()];
-        let mut visible_index = 0;
-        let mut cur = self.head;
+    fn push_dfs(&self, idx: usize, order: &mut Vec<usize>) {
+        order.push(idx);
+        for &child in &self.nodes[idx].children {
+            self.push_dfs(child, order);
+        }
+    }
 
-        while let Some(idx) = cur {
+    /// Returns the full RGA tree, including tombstones.
+    ///
+    /// Useful for debugging and for displaying in UIs showing deleted characters.
+    pub fn tree(&self) -> RgaTree {
+        let order = self.dfs_order();
+        let mut visible_indices = vec![None; self.nodes.len()];
+        let mut next_ids = vec![None; self.nodes.len()];
+        let mut visible_index = 0;
+
+        for window in order.windows(2) {
+            next_ids[window[0]] = Some(self.nodes[window[1]].id.clone());
+        }
+
+        for idx in order {
             if !self.nodes[idx].is_tombstone() {
                 visible_indices[idx] = Some(visible_index);
                 visible_index += 1;
             }
-            cur = self.nodes[idx].link;
         }
 
         let nodes = self
@@ -246,25 +228,23 @@ impl Rga {
                 tombstone: node.tombstone,
                 id: node.id.clone(),
                 left: node.left.clone(),
-                next: node
-                    .link
-                    .and_then(|next_idx| self.nodes.get(next_idx))
-                    .map(|next| next.id.clone()),
+                children: node
+                    .children
+                    .iter()
+                    .map(|child_idx| self.nodes[*child_idx].id.clone())
+                    .collect(),
+                next: next_ids[index].clone(),
                 deleted_by: node.deleted_by.clone(),
             })
             .collect();
 
         RgaTree {
-            text: self.text(),
+            text: self.to_string(),
             nodes,
         }
     }
 
     /// Removes tombstoned nodes and rebuilds the index.
-    ///
-    /// After compaction, any in-flight op that references a removed node as its
-    /// `left` anchor will fail with [`RgaError::MissingDependency`]. Only call
-    /// this when all connected peers are fully caught up.
     ///
     /// Returns the number of nodes removed.
     pub fn clear_tombstones(&mut self) -> usize {
@@ -279,14 +259,11 @@ impl Rga {
             return 0;
         }
 
-        let mut live_order = Vec::new();
-        let mut cur = self.head;
-        while let Some(idx) = cur {
-            if !self.nodes[idx].tombstone {
-                live_order.push(idx);
-            }
-            cur = self.nodes[idx].link;
-        }
+        let live_order: Vec<_> = self
+            .dfs_order()
+            .into_iter()
+            .filter(|idx| !self.nodes[*idx].tombstone)
+            .collect();
 
         let mut nodes = Vec::with_capacity(live_order.len());
         let mut node_indices = HashMap::with_capacity(live_order.len());
@@ -294,22 +271,49 @@ impl Rga {
         for old_idx in live_order {
             let mut node = self.nodes[old_idx].clone();
             node.left = live_left(node.left, &removed_lefts);
-            node.link = None;
+            node.children.clear();
             node_indices.insert(node.id.clone(), nodes.len());
             nodes.push(node);
         }
 
-        let len = nodes.len();
-        for (idx, node) in nodes.iter_mut().enumerate() {
-            node.link = (idx + 1 < len).then_some(idx + 1);
-        }
+        let roots = rebuild_children(&mut nodes, &node_indices);
 
         let removed = removed_lefts.len();
-        self.head = (!nodes.is_empty()).then_some(0);
+        self.roots = roots;
         self.nodes = nodes;
         self.node_indices = node_indices;
         removed
     }
+}
+
+fn insert_child(children: &mut Vec<usize>, nodes: &[Node], child_idx: usize) {
+    let child_id = &nodes[child_idx].id;
+    let pos = children
+        .iter()
+        .position(|idx| nodes[*idx].id.precedes(child_id))
+        .unwrap_or(children.len());
+    children.insert(pos, child_idx);
+}
+
+fn rebuild_children(nodes: &mut [Node], node_indices: &HashMap<NodeId, usize>) -> Vec<usize> {
+    let mut roots = Vec::new();
+
+    for idx in 0..nodes.len() {
+        match nodes[idx]
+            .left
+            .as_ref()
+            .and_then(|left| node_indices.get(left).copied())
+        {
+            Some(parent_idx) => {
+                let mut children = std::mem::take(&mut nodes[parent_idx].children);
+                insert_child(&mut children, nodes, idx);
+                nodes[parent_idx].children = children;
+            }
+            None => insert_child(&mut roots, nodes, idx),
+        }
+    }
+
+    roots
 }
 
 fn live_left(
@@ -327,12 +331,10 @@ fn live_left(
 
 impl fmt::Display for Rga {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut cur = self.head;
-        while let Some(idx) = cur {
+        for idx in self.dfs_order() {
             if !self.nodes[idx].is_tombstone() {
                 write!(f, "{}", self.nodes[idx].value)?;
             }
-            cur = self.nodes[idx].link;
         }
         Ok(())
     }
@@ -354,14 +356,14 @@ mod tests {
     #[test]
     fn empty_rga_is_empty_string() {
         let rga = Rga::new();
-        assert_eq!(rga.text(), "");
+        assert_eq!(rga.to_string(), "");
     }
 
     #[test]
     fn remote_insert_at_head() {
         let mut rga = Rga::new();
         rga.insert(None, 'a', id("a", 1)).unwrap();
-        assert_eq!(rga.text(), "a");
+        assert_eq!(rga.to_string(), "a");
     }
 
     #[test]
@@ -371,7 +373,7 @@ mod tests {
         let b = id("a", 2);
         rga.insert(None, 'a', a.clone()).unwrap();
         rga.insert(Some(a), 'b', b).unwrap();
-        assert_eq!(rga.text(), "ab");
+        assert_eq!(rga.to_string(), "ab");
     }
 
     #[test]
@@ -387,8 +389,8 @@ mod tests {
         rga2.insert(None, 'b', b).unwrap();
         rga2.insert(None, 'a', a).unwrap();
 
-        assert_eq!(rga1.text(), rga2.text());
-        assert_eq!(rga1.text(), "ba");
+        assert_eq!(rga1.to_string(), rga2.to_string());
+        assert_eq!(rga1.to_string(), "ba");
     }
 
     #[test]
@@ -403,7 +405,7 @@ mod tests {
         rga.delete(a.clone(), id("a", 3)).unwrap();
         rga.insert(Some(a), 'x', x).unwrap();
 
-        assert_eq!(rga.text(), "xb");
+        assert_eq!(rga.to_string(), "xb");
     }
 
     #[test]
@@ -414,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn tree_exposes_anchor_and_link_order() {
+    fn tree_exposes_anchor_children_and_traversal_order() {
         let mut rga = Rga::new();
         let a = id("a", 1);
         let b = id("b", 1);

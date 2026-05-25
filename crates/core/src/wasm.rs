@@ -1,8 +1,7 @@
 //! WebAssembly bindings for the RGA core.
 //!
 //! Exposes [`WasmReplica`] (as `RawReplica` on the JS side) for use in the
-//! browser. All ops cross the boundary as JSON-compatible `JsValue`s rather
-//! than typed Rust structs.
+//! browser. All ops cross the boundary as JSON-compatible JsValues.
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;

@@ -1,13 +1,13 @@
-//! Identity types for operations and nodes.
+//! Id types for operations and nodes.
 //!
-//! Every operation gets a unique [`OperationId`]. Because a node's identity is
-//! always the ID of the insert that created it, `NodeId` is just an alias for
+//! Every operation has a unique [`OperationId`]. `NodeId` is just an alias for
 //! `OperationId`.
 //!
-//! The total order on [`OperationId`] is what the RGA uses to settle concurrent
-//! inserts: Lamport timestamp first (causal ordering), then `replica_id`,
-//! `session_id`, and `seq` to break ties deterministically when two ops share
-//! the same timestamp.
+//! The total order on [`OperationId`] is what the RGA uses decide where nodes
+//! are inserted:
+//!  - Lamport timestamp first
+//!  - Replica ID second
+//!  - Session ID third (this is essentially the client ID)
 
 use std::cmp::Ordering;
 
@@ -16,16 +16,11 @@ use serde::{Deserialize, Serialize};
 pub type ReplicaId = String;
 pub type SessionId = String;
 
-/// A node's identity is the ID of the insert that created it.
 pub type NodeId = OperationId;
 
 /// A globally unique identifier for a single operation.
 ///
 /// The four fields together guarantee uniqueness across replicas and sessions.
-/// `lamport` advances monotonically and is updated whenever a remote op is
-/// observed, so it reflects causal ordering. When two ops have the same
-/// `lamport` (i.e. they were concurrent), the remaining fields break the tie
-/// consistently on every replica.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationId {
     pub session_id: SessionId,
